@@ -5,7 +5,7 @@
 // --- Tunable Parameters ---
 #define HISTORY_SIZE 40       // 40 samples (approx 2-4 seconds of history)
 //#define GAUSSIAN_SIGMA 10.0f  // "Width" of the bell curve. Lower = more reactive, Higher = smoother.
-#define GAUSSIAN_SIGMA 20.0f  // "Width" of the bell curve. Lower = more reactive, Higher = smoother.
+#define GAUSSIAN_SIGMA 15.0f  // "Width" of the bell curve. Lower = more reactive, Higher = smoother.
 
 typedef struct {
     int8_t rssi;
