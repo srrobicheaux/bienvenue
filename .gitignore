@@ -1,0 +1,15 @@
+build
+!.vscode/*
+# Secrets
+secrets.h
+
+# Pico Build Files (Don't upload these)
+build/
+*.elf
+*.bin
+*.uf2
+*.map
+
+# OS junk
+.DS_Store
+Thumbs.db

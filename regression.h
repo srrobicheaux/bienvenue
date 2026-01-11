@@ -1,0 +1,1 @@
+float get_gaussian_trend(int8_t new_rssi);
