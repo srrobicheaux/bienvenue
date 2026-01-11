@@ -102,7 +102,7 @@ BLE_target_name = settings->bleTarget;
     hci_event_callback_registration.callback = &packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
     hci_power_control(HCI_POWER_ON);
-    gap_set_scan_parameters(1, 0x0030, 0x0030);
+    gap_set_scan_parameters(0, 0x0030, 0x0030);
     gap_start_scan();
     BLE_init_addr_set = sscanf_bd_addr(settings->bleTarget, BLE_init_addr);
     if (!BLE_init_addr_set)
