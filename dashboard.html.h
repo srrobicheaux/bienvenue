@@ -1,5 +1,5 @@
 // dashboard.html.h
-static const char *DASHBOARD_HTML = R"RAWHTML(
+R"RAWHTML(
 <!DOCTYPE html>
 <html lang="en">
 <head>

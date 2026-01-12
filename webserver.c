@@ -9,12 +9,11 @@
 #include <string.h>
 #include <stdio.h>
 
-/*static const char *DASHBOARD_HTML =
+static const char *DASHBOARD_HTML =
 "HTTP/1.1 200 OK\r\n"
 "Content-Type: text/html\r\n"
 "Connection: close\r\n"
 "Cache-Control: no-cache\r\n\r\n"
-*/
 #include "dashboard.html.h"
 ;
 
