@@ -1,10 +1,9 @@
 #include "wifi_provisioning.h"
-#include "flash.h"
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
-#include "pico/unique_id.h"
 #include "hardware/watchdog.h"
 #include "webserver.h"
+#include "flash.h"
 
 #include "lwip/tcp.h"
 #include "dhcpserver.h"
@@ -61,28 +60,19 @@ bool wifi_provisioning_start()
     watchdog_update();
 
     printf("Provision System at:");
-
-    webserver_init(&New_settings); // provisioning is true
+    webserver_init(true); // provisioning is true
     watchdog_update();
 
     u8_t counter = 0;
     //last param to be sent
-    while (strlen(New_settings.bleTarget) == 0)
+    while (true)
     {
         watchdog_update();
         cyw43_arch_poll();
         sleep_ms(10);
     }
     watchdog_update();
-    pico_get_unique_board_id_string(New_settings.device_id, 32);
-
-    printf("Saving:%s\n%s\n%s\n%s\n",
-           New_settings.bleTarget,
-           New_settings.device_id,
-           New_settings.password,
-           New_settings.ssid);
-    save_settings(&New_settings); // Save immediately
-
+ 
     //    stop_http_server();
     //    stop_dhcp_server();
     //    dns_server_deinit();  // If you have it

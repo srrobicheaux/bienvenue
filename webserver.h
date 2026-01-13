@@ -13,7 +13,7 @@
  * 
  * @return true on success, false on failure.
  */
-bool webserver_init(DeviceSettings *settings);
+bool webserver_init(bool provisioning);
 
 /**
  * Polls the web server (must be called frequently from main loop).

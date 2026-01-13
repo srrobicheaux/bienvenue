@@ -8,13 +8,14 @@ typedef struct {
     char password[64];
     char bleTarget[32];
     char device_id[32];
+    bool initialized;
 } DeviceSettings;
 
 // Point to the location in memory where flash is mapped
-extern const DeviceSettings *flash_data;
+extern DeviceSettings settings;
 
-bool load_settings(DeviceSettings *dest, const char* current_device_id);
-void save_settings(DeviceSettings *src);
+DeviceSettings *load_settings();
+void save_settings();
 
 //Misc hardware related items
 bool get_bootsel_button();

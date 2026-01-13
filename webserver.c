@@ -8,6 +8,7 @@
 #include "lwip/tcp.h"
 #include "lwip/ip4_addr.h"
 
+#include "flash.h"
 #include "html.dashboard.h"
 #include "html.wifiform.h"
 #include "html.wifisuccess.h"
@@ -36,7 +37,7 @@
 // SSE clients (simple single-client for now – extend to list if needed)
 static struct tcp_pcb *sse_client = NULL;
 // confusing global parameter needs to be eliminatged
-DeviceSettings *_settings;
+static bool provisioning;
 
 static err_t http_sent_cb(void *arg, struct tcp_pcb *tpcb, u16_t len)
 {
@@ -46,6 +47,25 @@ static err_t http_sent_cb(void *arg, struct tcp_pcb *tpcb, u16_t len)
         tcp_close(tpcb);
     }
     return ERR_OK;
+}
+bool parser(char *haystack, char *needle, char *destination)
+{
+    char *key = strstr(haystack, needle);
+    if (key != NULL) // assign and check due to extra parenthises
+    {
+        char *value = strchr(key,'=')+1;
+        int len = strcspn(value,"&\0");
+        if (len ==0){
+            printf("Found %s empty!\n",key);
+        }
+        else {
+            strncpy(destination, value, len);
+            printf("Found %s%s\n", needle,destination);
+        }
+        destination[len]='\0';
+        return true;
+    }
+    return false;
 }
 
 static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
@@ -64,7 +84,6 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
 
     tcp_recved(tpcb, p->tot_len);
-    printf("\nPacket Total Length:%d, Length:%d\n", p->tot_len, p->len);
 
     if (p->len == 0 || (strncmp(p->payload, "GET /f", 6) == 0))
     {
@@ -74,51 +93,50 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
 
     char req[1024];
-    int length = (p->len > sizeof(req) ? sizeof(req) : p->len);
+    int length = 0;
+    if (p->len > sizeof(req))
+    {
+        length = sizeof(req);
+        printf("Request of %d truncated to %d prevent buf overflow.\n", p->len, length);
+    }
+    else
+    {
+        length = p->len;
+    }
+
+    memset(req, 0, sizeof(req));
     memcpy(req, p->payload, p->len);
-    printf("Length%d-%20s\n", length, req);
 
     // fragmented
     if (p->tot_len != p->len)
     {
-        printf("Fragmentation detected but has not been coded.\n");
-        printf("Next Total Length:%d, Length:%d\n", p->next->tot_len, p->next->len);
-        printf("next:%s\n", p->next->payload);
+        printf("!!!!!!!!!!!!!!!!!Fragmentation detected but has not been coded!!!!!!!!!!!!!\n");
+        //        printf("Next Total Length:%d, Length:%d\n", p->next->tot_len, p->next->len);
+        //        printf("next:%s\n", p->next->payload);
     }
-    if (length > 12 && strstr(req, "100 Continue") != NULL)
+    else if (length > 12 && strstr(req, "100 Continue") != NULL)
     {
         header = HEADER_CONTINUE;
     }
-    if (length > 11 && strncmp(req, "GET /events", 11) == 0)
+    else if (responding || (length > 7 && (req, "POST / ", 7) == 0 || strncmp(req, "POST /", 6) == 0))
     {
-        // Send immediate initial data to validate connection and prevent empty parse error
-        response = RESPOND_SSE;
-        header = HEADER_SSE;
-        printf("SSE client connected – sent initial data\n");
-    }
-    if (responding || (length > 7 && (req, "POST / ", 7) == 0 || strncmp(req, "POST /", 6) == 0))
-    {
-        printf("Response:%20s\n", req);
+        printf("Post:%s\n", req);
         responding = true;
-        if (strstr(req, "_ssid"))
+        DeviceSettings *settings = load_settings();
+        static bool ss,ps,bl=false;
+
+         ss=parser(req, "_ssid=", settings->ssid);
+         ps=parser(req, "_password=", settings->password);
+         bl=parser(req, "_BLE_target=", settings->bleTarget);
+
+        if (ss && ps && bl)
         {
-
-            char *delim = "&";
-            char *token = strtok(req, delim);
-
-            // Walk through other tokens
-            while (token != NULL)
-            {
-                char *delim2 = "=";
-                char *token2 = strtok(token, delim2);
-                printf("Key: %s, ", token2);
-                token = strtok(NULL, delim2);
-                printf("Value: %s, ", token2);
-
-                token = strtok(req, delim);
-            }
-            save_settings(_settings);
-            printf("Setting saved");
+            printf("Saving:%s\n%s\n%s\n%s\n",
+                   settings->bleTarget,
+                   settings->device_id,
+                   settings->password,
+                   settings->ssid);
+            save_settings(); // Save immediately
 
             printf("RESPOND_SUCCESS\n");
             response = RESPOND_SUCCESS;
@@ -130,10 +148,23 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
             return ERR_OK;
         }
     }
-
-    if (length > 6 && strncmp(req, "GET / ", 6) == 0 || strncmp(req, "GET /", 5) == 0)
+    else if (length > 11 && strncmp(req, "GET /events", 11) == 0)
     {
-        if (_settings != NULL)
+        // SSE connection
+        if (sse_client && sse_client != tpcb)
+        {
+            tcp_abort(sse_client);
+        }
+        sse_client = tpcb;
+
+        // Send immediate initial data to validate connection and prevent empty parse error
+        response = RESPOND_SSE;
+        header = HEADER_SSE;
+        printf("SSE client connected – sent initial data\n");
+    }
+    else if (length > 6 && strncmp(req, "GET / ", 6) == 0 || strncmp(req, "GET /", 5) == 0)
+    {
+        if (provisioning)
         {
             printf("RESPOND_FORM %15s\n", req);
             response = RESPOND_FORM;
@@ -169,9 +200,6 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
     tcp_output(tpcb);
     cyw43_arch_lwip_end();
-    tcp_close(tpcb);
-    pbuf_free(p);
-    sleep_ms(1);
     return ERR_OK;
 }
 
@@ -187,9 +215,9 @@ static err_t http_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
 
 static struct tcp_pcb *listen_pcb = NULL;
 
-bool webserver_init(DeviceSettings *settings)
+bool webserver_init(bool _provisioning)
 {
-    _settings = settings;
+    provisioning = _provisioning;
     listen_pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!listen_pcb)
         return false;

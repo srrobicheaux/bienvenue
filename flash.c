@@ -3,6 +3,8 @@
 #include "hardware/sync.h"
 #include "hardware/adc.h"
 #include "pico/stdio.h"
+#include "pico/unique_id.h"
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -19,34 +21,38 @@
 
 // Point to the location in memory where flash is mapped
 const DeviceSettings *flash_data = (const DeviceSettings *)(XIP_BASE + FLASH_TARGET_OFFSET);
+DeviceSettings settings;
 
-bool load_settings(DeviceSettings *dest, const char* current_device_id) {
-    memcpy(dest, flash_data, sizeof(DeviceSettings));
+DeviceSettings *load_settings() {
+    char this_id[32];
+    pico_get_unique_board_id_string(this_id, 32);
 
+    memcpy(&settings, flash_data, sizeof(DeviceSettings));
     // Check if the ID number matches
-    if(strcmp(dest->device_id,current_device_id) != 0){
+    if(strcmp(settings.device_id,this_id) != 0){
         // DATA IS INVALID: Set defaults
         printf("No valid settings found. Initializing defaults...\n");
-        dest->version = SETTINGS_VERSION;
-        strncpy(dest->ssid, "", 32);
-        strncpy(dest->password, "", 64);
-        strncpy(dest->device_id, current_device_id, 32);
-        strncpy(dest->bleTarget, "", 32);
-        return false;
+        settings.version = SETTINGS_VERSION;
+        strncpy(settings.ssid, "_", 32);
+        strncpy(settings.password, "_", 64);
+        strncpy(settings.bleTarget, "_", 32);
+        settings.initialized = false;
+        strncpy(settings.device_id, this_id, 32);
     } else {
-        return true;
+        settings.initialized = true;
         // DATA IS VALID: Copied from flash to RAM
     }
+    return &settings;
 }
 
-void save_settings(DeviceSettings *src) {
-    src->version = SETTINGS_VERSION;
+void save_settings() {
+    settings.version = SETTINGS_VERSION;
         // Buffer must be a multiple of FLASH_PAGE_SIZE (256)
     uint8_t buffer[FLASH_PAGE_SIZE];
     memset(buffer, 0, sizeof(buffer));
 
-    if (src != NULL) {
-        memcpy(buffer, src, sizeof(DeviceSettings));
+    if (&settings != NULL) {
+        memcpy(buffer, &settings, sizeof(DeviceSettings));
         printf("Settings saved to flash.\n");
     }
     else
@@ -58,7 +64,6 @@ void save_settings(DeviceSettings *src) {
     flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
     flash_range_program(FLASH_TARGET_OFFSET, buffer, FLASH_PAGE_SIZE);
     restore_interrupts(ints);
-    
 }
 
 /**

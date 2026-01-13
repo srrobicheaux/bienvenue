@@ -96,8 +96,7 @@ bool AssignTeslaBLE_Name(char *target)
 }
 int main()
 {
-    DeviceSettings settings;
-
+    DeviceSettings *settings;
     stdio_init_all();
     sleep_ms(2000); // Give serial time to open
 
@@ -105,32 +104,32 @@ int main()
     pico_get_unique_board_id_string(id_str, sizeof(id_str));
     printf("%s Starting on Pico ID: %s\n", CYW43_HOST_NAME, id_str);
 
-    // device id is used as a magic key for flash and network
-    if (load_settings(&settings, id_str))
+    settings=load_settings();
+    if (settings->initialized)
     {
         watchdog_enable(RESET_TIME, true);
         printf("Button until connected to reset!\n");
-        printf("Current Config:\tTarget:%s\tSSID:%s\n", settings.bleTarget, settings.ssid);
-        if (ConnectNetwork(&settings))
+        printf("Current Config:\tTarget:%s\tSSID:%s\n", settings->bleTarget, settings->ssid);
+        if (ConnectNetwork(settings))
         {
             // can't touchbase until after web init because of LED Blink Do'nt forget again!
             touchBase();
             webserver_init(NULL);//Settings are not needed
             touchBase();
-            if (strlen(settings.bleTarget) == 0)
+            if (strlen(settings->bleTarget) == 0)
             {
-                AssignTeslaBLE_Name(settings.bleTarget);
+                AssignTeslaBLE_Name(settings->bleTarget);
                 touchBase();
             }
-            BLE_Init(&settings, webserver_push_update);
+            BLE_Init(settings, webserver_push_update);
             touchBase();
             int once = 1;
             while (true)
             {
-                if (once && strchr(settings.bleTarget, ':'))
+                if (once && strchr(settings->bleTarget, ':'))
                 {
-                    printf("Save the MAC once discovered:%s\n", settings.bleTarget);
-                    save_settings(&settings);
+                    printf("Save the MAC once discovered:%s\n", settings->bleTarget);
+                    save_settings();
                     touchBase();
 
                     once = 0;

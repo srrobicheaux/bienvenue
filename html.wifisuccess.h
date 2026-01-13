@@ -28,5 +28,5 @@
     }
     }, 1000);
     </script>
-    </body></html>;
-    )RAWHTML"
+    </body></html>
+)RAWHTML"
