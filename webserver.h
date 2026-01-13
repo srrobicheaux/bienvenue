@@ -5,6 +5,7 @@
 #include "pico/stdlib.h"
 #include "lwip/tcp.h"
 #include <stdbool.h>
+#include "flash.h"
 
 /**
  * Initializes the web server (binds/listens on port 80).
@@ -12,7 +13,7 @@
  * 
  * @return true on success, false on failure.
  */
-bool webserver_init(void);
+bool webserver_init(DeviceSettings *settings);
 
 /**
  * Polls the web server (must be called frequently from main loop).

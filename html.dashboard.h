@@ -1,6 +1,5 @@
 // dashboard.html.h
-R"RAWHTML(
-<!DOCTYPE html>
+#define RESPOND_DASHBOARD R"RAWHTML(<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

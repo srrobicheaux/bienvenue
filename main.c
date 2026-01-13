@@ -115,7 +115,7 @@ int main()
         {
             // can't touchbase until after web init because of LED Blink Do'nt forget again!
             touchBase();
-            webserver_init();
+            webserver_init(NULL);//Settings are not needed
             touchBase();
             if (strlen(settings.bleTarget) == 0)
             {
