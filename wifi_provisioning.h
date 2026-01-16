@@ -17,4 +17,6 @@
  * @return true if credentials captured (out buffers filled).
  */
 bool wifi_provisioning_start();
+bool ConnectNetwork(DeviceSettings *settings);
+
 #endif

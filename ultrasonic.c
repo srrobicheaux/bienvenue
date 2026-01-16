@@ -1,89 +1,155 @@
-// ultrasonic.c — 40 kHz FMCW with quadrature sampling on RP2040
 #include "pico/stdlib.h"
+#include <stdio.h>
+#include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
-#include "hardware/adc.h"
-#include "hardware/irq.h"
-#include "pico/multicore.h"
-#include "chirp.pio.h"
+#include "hardware/clocks.h" // <--- ADDED THIS TO FIX ERRORS
 #include "ultrasonic.h"
+#include "chirp.pio.h"
 
-#define TX_PIN_POS  0
-#define TX_PIN_NEG  3
-#define RX_ADC_GPIO 26
+#define COMPLEX_SAMPLE_RATE_HZ 31250.0f
+#define SPEED_OF_SOUND_MPS 343.0f
+#define PICO_DEFAULT_LED_PIN 29
 
-int32_t adc_buffer_i[16384];
-int32_t adc_buffer_q[16384];
+uint16_t adc_buffer_i[CHIRP_LENGTH];
+uint16_t adc_buffer_q[CHIRP_LENGTH];
 
-static PIO   pio;
-static uint  sm;
-static uint  dma_tx;
-static volatile uint32_t sample_counter = 0;
+static int dma_chan_i;
+static PIO pio_hw = pio0;
+static uint sm = 0;
 
-void __isr pio_irq_handler(void) {
-    pio_interrupt_clear(pio0, 0);
+void internal_chirp_init(PIO pio, uint sm, uint offset, uint pin)
+{
+    pio_sm_config c = chirp_program_get_default_config(offset);
 
-    uint16_t raw = adc_read();
-    int16_t  val = (int16_t)(raw - 2048);  // centre at 0
+    // CRITICAL: This MUST match the 'set pins' in the PIO code
+    sm_config_set_set_pins(&c, pin, 5);
 
-    bool is_q        = (sample_counter & 1);
-    bool is_negative = (sample_counter & 2);
-    if (is_negative) val = -val;
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
 
-    int32_t *buf = is_q ? adc_buffer_q : adc_buffer_i;
-    buf[sample_counter >> 5] += val;   // 32 cycles per complex sample
+    // Speed: 1MHz makes the [12] delays result in 40kHz
+    float div = (float)clock_get_hz(clk_sys) / 1000000.0f;
+    sm_config_set_clkdiv(&c, div);
 
-    sample_counter++;
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
 }
 
-void core1_entry(void) {
-    irq_set_exclusive_handler(PIO0_IRQ_0, pio_irq_handler);
-    irq_set_enabled(PIO0_IRQ_0, true);
-    while (1) __wfi();
-}
-
-bool radar_init(void) {
-    set_sys_clock_khz(256000, true);
-
-    multicore_launch_core1(core1_entry);
-
-    adc_gpio_init(RX_ADC_GPIO);
+bool radar_init()
+{
     adc_init();
-    adc_select_input(0);
+    // 1. Change GPIO from 26 to 27x
+    adc_gpio_init(27);
+    // gpio_set_pulls(27, false, true); // Enable both internal 50k pull-up and pull-down for bias
+        gpio_set_pulls(27, false, false); // Enable both internal 50k pull-up and pull-down for bias
+
+    // 2. Select Input 1 (GPIO 27 is ADC1)
+    adc_select_input(1);
+
     adc_fifo_setup(true, true, 1, false, false);
-    adc_set_clkdiv(0);
+    adc_set_clkdiv(1535);
 
-    pio = pio0;
-    uint offset = pio_add_program(pio, &chirp_program);
-    sm = pio_claim_unused_sm(pio, true);
+    uint offset = pio_add_program(pio_hw, &chirp_program);
+    //    internal_chirp_init(pio_hw, sm, offset, 0);
+    internal_chirp_init(pio_hw, sm, offset, 4);
 
-    chirp_program_init(pio, sm, offset, TX_PIN_POS, TX_PIN_NEG);
+    dma_chan_i = dma_claim_unused_channel(true);
+    dma_channel_config c_i = dma_channel_get_default_config(dma_chan_i);
+    channel_config_set_transfer_data_size(&c_i, DMA_SIZE_16);
+    channel_config_set_read_increment(&c_i, false);
+    channel_config_set_write_increment(&c_i, true);
 
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
+    // 3. Keep DREQ_ADC (This paces the DMA to the ADC's speed regardless of channel)
+    channel_config_set_dreq(&c_i, DREQ_ADC);
 
-    dma_tx = dma_claim_unused_channel(true);
+    dma_channel_configure(dma_chan_i, &c_i, adc_buffer_i, &adc_hw->fifo, CHIRP_LENGTH, false);
 
-    printf("40 kHz FMCW radar initialized\n");
     return true;
 }
+void radar_run_cycle()
+{
+    adc_fifo_drain();
+    adc_run(false);
 
-void radar_run_cycle(void) {
-    sample_counter = 0;
-    memset(adc_buffer_i, 0, sizeof(adc_buffer_i));
-    memset(adc_buffer_q, 0, sizeof(adc_buffer_q));
+    dma_channel_abort(dma_chan_i);
+    dma_channel_set_write_addr(dma_chan_i, adc_buffer_i, true);
 
-    dma_channel_config cfg = dma_channel_get_default_config(dma_tx);
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-    channel_config_set_dreq(&cfg, pio_get_dreq(pio, sm, true));
-    channel_config_set_read_increment(&cfg, true);
-    channel_config_set_write_increment(&cfg, false);
+    adc_run(true);                                    // 1. Listen first
+    pio_sm_put_blocking(pio_hw, sm, 1);               // 2. Pulse 40kHz
+    dma_channel_wait_for_finish_blocking(dma_chan_i); // 3. Wait
+    adc_run(false);
+}
 
-    dma_channel_configure(dma_tx, &cfg,
-        &pio->txf[sm],
-        chirp_buffer,
-        CHIRP_LENGTH,
-        true);
+/**
+ * Process the ADC buffer to find the strongest echo.
+ */
+void process_one_beam(int len, Detection *det)
+{
+    // 1. DYNAMIC AUTO-CALIBRATION
+    // We sample the first few values to find the DC center (Bias).
+    // This adapts automatically whether Bias is 930 or 2048.
+    int64_t sum_dc = 0;
+    for (int i = 0; i < 32; i++)
+    {
+        sum_dc += adc_buffer_i[i];
+    }
+    int32_t local_center = (int32_t)(sum_dc / 32);
 
-    dma_channel_wait_for_finish_blocking(dma_tx);
-    busy_wait_us(15000);  // wait for echoes (up to ~5 m)
+    // 2. NOISE FLOOR ESTIMATION
+    // Measure variance in the early part of the buffer.
+    int64_t noise_sum = 0;
+    for (int i = 10; i < 50; i++)
+    {
+        int32_t sample = (int32_t)adc_buffer_i[i] - local_center;
+        noise_sum += (int64_t)sample * sample;
+    }
+    int64_t noise_floor = noise_sum / 40;
+    if (noise_floor < 10)
+        noise_floor = 10;
+
+    // 3. SEARCH FOR ECHO PEAK
+    int64_t max_mag_sq = 0;
+    int max_idx = -1;
+
+    // skip_samples: Ignore "Main Bang" (transmitter ringing).
+    // Increased to 220 because the 12V pulse rings longer.
+    const int skip_samples = 220;
+
+    for (int i = skip_samples; i < len - 10; i++)
+    {
+        int32_t sample = (int32_t)adc_buffer_i[i] - local_center;
+        int64_t mag_sq = (int64_t)sample * sample;
+
+        if (mag_sq > max_mag_sq)
+        {
+            max_mag_sq = mag_sq;
+            max_idx = i;
+        }
+    }
+
+    // 4. THRESHOLDING AND DISTANCE
+    // Threshold set to 1500 to ignore small air turbulence but catch real walls.
+    if (max_idx > skip_samples && max_mag_sq > 2500)
+    { // Increased from 1500
+        det->amplitude_sq = (uint32_t)max_mag_sq;
+
+        // Math: (index / sample_rate) * speed_of_sound / 2 (for round trip)
+        float t_sec = (float)max_idx / COMPLEX_SAMPLE_RATE_HZ;
+        float dist_m = (t_sec * SPEED_OF_SOUND_MPS) / 2.0f;
+        det->distance_mm = (uint16_t)(dist_m * 1000.0f);
+    }
+    else
+    {
+        det->distance_mm = 0;
+        det->amplitude_sq = 0;
+    }
+
+    // Console Debug Output (every 10 samples for better visibility)
+    static int debug_count = 0;
+    if (false && ++debug_count % 10 == 0)
+    {
+        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
+               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
+    }
 }

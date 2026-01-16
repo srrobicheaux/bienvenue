@@ -20,5 +20,8 @@ void save_settings();
 //Misc hardware related items
 bool get_bootsel_button();
 float ChipTemp();
-
+void touchBase();
+void ButtonPress();
+void reset();
+bool pin(int pin, bool toggle);
 #endif // FLASH_H

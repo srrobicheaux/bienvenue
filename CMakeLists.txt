@@ -47,11 +47,13 @@ add_executable(${PROJECT_NAME}
     dhcpserver.c
     dnsserver.c
     regression.c
+    ultrasonic.c
     )
+
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/chirp.pio)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
-    ${PICO_SDK_PATH}/lib/btstack/src  # This allows #include "ble/ad_parser.h" to work
 )
 
 target_link_libraries(${PROJECT_NAME}

@@ -17,7 +17,6 @@
 
 // other responses defined n the html files
 #define RESPOND_SSE "data: {\"rssi\":-70,\"trend\":\"STARTED\",\"uptime\":0}\r\r\n"
-
 #define HEADER_CONTINUE "HTTP/1.1 100 Continue\r\n\r\n"
 // this one needs to be modifiable to add length
 #define HEADER_SUCCESS            \
@@ -26,7 +25,12 @@
     "Connection: close\r\n"       \
     "Cache-Control: no-cache\r\n" \
     "Content-Length:%d\r\n\r\n"
-
+#define HEADER_JSON                  \
+    "HTTP/1.1 200 OK"                \
+    "Content-Type: application/json" \
+    "Connection: close\r\n"          \
+    "Cache-Control: no-cache\r\n"    \
+    "Content-Length:%d\r\n\r\n"
 #define HEADER_SSE                        \
     "HTTP/1.1 200 OK\r\n"                 \
     "Content-Type: text/event-stream\r\n" \
@@ -53,16 +57,18 @@ bool parser(char *haystack, char *needle, char *destination)
     char *key = strstr(haystack, needle);
     if (key != NULL) // assign and check due to extra parenthises
     {
-        char *value = strchr(key,'=')+1;
-        int len = strcspn(value,"&\0");
-        if (len ==0){
-            printf("Found %s empty!\n",key);
+        char *value = strchr(key, '=') + 1;
+        int len = strcspn(value, "&\0");
+        if (len == 0)
+        {
+            printf("Found %s empty!\n", key);
         }
-        else {
+        else
+        {
             strncpy(destination, value, len);
-            printf("Found %s%s\n", needle,destination);
+            printf("Found %s%s\n", needle, destination);
         }
-        destination[len]='\0';
+        destination[len] = '\0';
         return true;
     }
     return false;
@@ -72,8 +78,9 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
 {
     static bool responding = false;
     char *header = NULL;
-    char buffer[256];
+    char header_buffer[256];
     char *response = NULL;
+    char response_buffer[256];
     if (err != ERR_OK || p == NULL)
     {
         if (tpcb == sse_client)
@@ -123,11 +130,11 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         printf("Post:%s\n", req);
         responding = true;
         DeviceSettings *settings = load_settings();
-        static bool ss,ps,bl=false;
+        static bool ss, ps, bl = false;
 
-         ss=parser(req, "_ssid=", settings->ssid);
-         ps=parser(req, "_password=", settings->password);
-         bl=parser(req, "_BLE_target=", settings->bleTarget);
+        ss = parser(req, "_ssid=", settings->ssid);
+        ps = parser(req, "_password=", settings->password);
+        bl = parser(req, "_BLE_target=", settings->bleTarget);
 
         if (ss && ps && bl)
         {
@@ -162,19 +169,50 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         header = HEADER_SSE;
         printf("SSE client connected – sent initial data\n");
     }
-    else if (length > 6 && strncmp(req, "GET / ", 6) == 0 || strncmp(req, "GET /", 5) == 0)
+    else if ((length > 11 && (strncmp(req, "GET /config ", 11) == 0)) ||
+             (provisioning && length > 6 && (strncmp(req, "GET / ", 6) == 0)))
     {
-        if (provisioning)
-        {
-            printf("RESPOND_FORM %15s\n", req);
-            response = RESPOND_FORM;
+        printf("RESPOND_FORM\n");
+        response = RESPOND_FORM;
+    }
+    else if ((length > 14 && (strncmp(req, "GET /dashboard ", 14) == 0)) ||
+             (!provisioning && length > 6 && (strncmp(req, "GET / ", 6) == 0)))
+    {
+        // Serve dashboard
+        printf("RESPOND_DASHBOARD\n");
+        response = RESPOND_DASHBOARD;
+    }
+    else if ((length > 14 && (strncmp(req, "GET /settings", 13) == 0)))
+    {
+        // Serve settings for config
+        printf("RESPOND_SETTINGS\n");
+        header = HEADER_JSON;
+
+        DeviceSettings *settings = load_settings();
+        snprintf(response_buffer, sizeof(response_buffer),
+                 "{\"ssid\":\"%s\",\"password\":\"%s\",\"bleTarget\":\"%s\",\"initialized\":\"%d\"}\r\r\n",
+                 settings->ssid, settings->password, settings->bleTarget, settings->initialized);
+        response = response_buffer;
+    }
+    else if ((length > 9 && (strncmp(req, "GET /pio=", 9) == 0)))
+    {
+        int pio = atoi(req + 9);
+        if(strstr(req,"toggle")){
+            pin(pio,1);
         }
-        else
-        {
-            // Serve dashboard
-            printf("RESPOND_DASHBOARD\n");
-            response = RESPOND_DASHBOARD;
+        if(strstr(req,"press")){
+            pin(pio,1);
+            cyw43_delay_ms(500);
+            pin(pio,1);
         }
+
+        // Serve settings for config
+        printf("RESPOND_PIO\n");
+        header = HEADER_JSON;
+
+        snprintf(response_buffer, sizeof(response_buffer),
+                 "{\"pio\":\"%d\",\"value\",%s}\r\r\n", pio, (pin(pio,false) ? "true" : "false"));
+        response = response_buffer;
     }
     else
     {
@@ -183,12 +221,16 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         pbuf_free(p);
         return ERR_ABRT;
     }
-
-    int len = strlen(response);
     if (header == NULL)
     {
-        snprintf(buffer, strlen(HEADER_SUCCESS) + 6, HEADER_SUCCESS, len);
-        header = buffer;
+        header = HEADER_SUCCESS;
+    }
+
+    int len = strlen(response);
+    if (strstr(header, "Content-Length:") != 0)
+    {
+        snprintf(header_buffer, strlen(header) + 6, header, len);
+        header = header_buffer;
     }
 
     cyw43_arch_lwip_begin();
@@ -245,6 +287,9 @@ void webserver_poll(void)
 
 void webserver_push_update(char *msg, size_t size)
 {
+#ifdef DEBUG
+    printf("message:%s\n", msg);
+#endif
     // No client or no data to send
     if (!sse_client || size == 0)
         return; // Nothing to send
