@@ -9,13 +9,14 @@ typedef struct {
     char bleTarget[32];
     char device_id[32];
     bool initialized;
+    bd_addr_t bleAddress;
 } DeviceSettings;
 
 // Point to the location in memory where flash is mapped
 extern DeviceSettings settings;
 
 DeviceSettings *load_settings();
-void save_settings();
+void save_settings(bool initialized);
 
 //Misc hardware related items
 bool get_bootsel_button();

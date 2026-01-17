@@ -3,6 +3,7 @@
 #include <malloc.h>
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
@@ -52,24 +53,75 @@ static err_t http_sent_cb(void *arg, struct tcp_pcb *tpcb, u16_t len)
     }
     return ERR_OK;
 }
-bool parser(char *haystack, char *needle, char *destination)
+
+// Define this at the top of your file or in a header
+int hex_char_to_int(char c)
 {
-    char *key = strstr(haystack, needle);
-    if (key != NULL) // assign and check due to extra parenthises
+    c = tolower((unsigned char)c);
+    if (isdigit(c))
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    return 0;
+}
+
+void url_decode(char *dst, const char *src)
+{
+    char *p_dst = dst;
+    const char *p_src = src;
+
+    while (*p_src)
     {
-        char *value = strchr(key, '=') + 1;
-        int len = strcspn(value, "&\0");
-        if (len == 0)
+        if (*p_src == '%' && isxdigit(p_src[1]) && isxdigit(p_src[2]))
         {
-            printf("Found %s empty!\n", key);
+            // Take the two hex characters and convert them
+            int high = hex_char_to_int(p_src[1]);
+            int low = hex_char_to_int(p_src[2]);
+
+            // Combine them into a single byte (high nibble | low nibble)
+            *p_dst++ = (char)((high << 4) | low);
+            p_src += 3;
+        }
+        else if (*p_src == '+')
+        {
+            *p_dst++ = ' ';
+            p_src++;
         }
         else
         {
-            strncpy(destination, value, len);
-            printf("Found %s%s\n", needle, destination);
+            *p_dst++ = *p_src++;
         }
-        destination[len] = '\0';
-        return true;
+    }
+    *p_dst = '\0'; // Crucial: Terminate the string to remove the "tail"
+}
+// Remove url_decode from here!
+bool parser(char *haystack, const char *needle, char *destination, size_t dest_max_len)
+{
+    char *ptr = haystack;
+    size_t needle_len = strlen(needle);
+
+    while ((ptr = strstr(ptr, needle)) != NULL)
+    {
+        bool is_start = (ptr == haystack || *(ptr - 1) == '?' || *(ptr - 1) == '&');
+
+        if (is_start && ptr[needle_len] == '=')
+        {
+            char *value = ptr + needle_len + 1;
+            int len = strcspn(value, "&\0");
+
+            if (len == 0)
+            {
+                destination[0] = '\0';
+            }
+            else
+            {
+                size_t copy_len = (len < dest_max_len - 1) ? len : dest_max_len - 1;
+                strncpy(destination, value, copy_len);
+                destination[copy_len] = '\0';
+            }
+            return true;
+        }
+        ptr++;
     }
     return false;
 }
@@ -81,6 +133,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     char header_buffer[256];
     char *response = NULL;
     char response_buffer[256];
+    char req[1461];
+
     if (err != ERR_OK || p == NULL)
     {
         if (tpcb == sse_client)
@@ -99,20 +153,13 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         return ERR_OK;
     }
 
-    char req[1024];
-    int length = 0;
+    int length = MIN(p->len, sizeof(req));
     if (p->len > sizeof(req))
     {
-        length = sizeof(req);
-        printf("Request of %d truncated to %d prevent buf overflow.\n", p->len, length);
+        printf("Request of %d length truncated to %d prevent buf overflow.\n", p->len, length);
     }
-    else
-    {
-        length = p->len;
-    }
-
-    memset(req, 0, sizeof(req));
-    memcpy(req, p->payload, p->len);
+    memcpy(req, p->payload, length);
+    req[length] = '\0';
 
     // fragmented
     if (p->tot_len != p->len)
@@ -125,37 +172,39 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     {
         header = HEADER_CONTINUE;
     }
-    else if (responding || (length > 7 && (req, "POST / ", 7) == 0 || strncmp(req, "POST /", 6) == 0))
+    else if (responding || (length > 6 && strncmp(req, "POST /", 6) == 0))
     {
-        printf("Post:%s\n", req);
         responding = true;
-        DeviceSettings *settings = load_settings();
-        static bool ss, ps, bl = false;
+        bool changed = false;
 
-        ss = parser(req, "_ssid=", settings->ssid);
-        ps = parser(req, "_password=", settings->password);
-        bl = parser(req, "_BLE_target=", settings->bleTarget);
+        // 1. Decode the whole request buffer ONCE
+        url_decode(req, req);
 
-        if (ss && ps && bl)
+        // 2. Now parse the keys from the clean, decoded string
+        parser(req, "_ssid", settings.ssid, 32);
+        parser(req, "_password", settings.password, 64);
+        changed = changed || parser(req, "_BLE_target", settings.bleTarget, 32);
+        if (changed)
         {
-            printf("Saving:%s\n%s\n%s\n%s\n",
-                   settings->bleTarget,
-                   settings->device_id,
-                   settings->password,
-                   settings->ssid);
-            save_settings(); // Save immediately
-
-            printf("RESPOND_SUCCESS\n");
-            response = RESPOND_SUCCESS;
             responding = false;
+            save_settings(true); // Save (don't blank) immediately
+            //            printf("RESPOND_SUCCESS\n");
+            if (provisioning)
+            {
+                response = RESPOND_SUCCESS;
+            }
+            else {
+                response = RESPOND_DASHBOARD;
+            }
         }
         else
         {
+            //            tcp_close(tpcb);
             pbuf_free(p);
             return ERR_OK;
         }
     }
-    else if (length > 11 && strncmp(req, "GET /events", 11) == 0)
+    else if (length > 12 && strncmp(req, "GET /events ", 12) == 0)
     {
         // SSE connection
         if (sse_client && sse_client != tpcb)
@@ -169,57 +218,63 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         header = HEADER_SSE;
         printf("SSE client connected – sent initial data\n");
     }
-    else if ((length > 11 && (strncmp(req, "GET /config ", 11) == 0)) ||
-             (provisioning && length > 6 && (strncmp(req, "GET / ", 6) == 0)))
-    {
-        printf("RESPOND_FORM\n");
-        response = RESPOND_FORM;
-    }
-    else if ((length > 14 && (strncmp(req, "GET /dashboard ", 14) == 0)) ||
-             (!provisioning && length > 6 && (strncmp(req, "GET / ", 6) == 0)))
-    {
-        // Serve dashboard
-        printf("RESPOND_DASHBOARD\n");
-        response = RESPOND_DASHBOARD;
-    }
-    else if ((length > 14 && (strncmp(req, "GET /settings", 13) == 0)))
+    else if ((length > 14 && (strncmp(req, "GET /settings ", 14) == 0)))
     {
         // Serve settings for config
-        printf("RESPOND_SETTINGS\n");
         header = HEADER_JSON;
-
-        DeviceSettings *settings = load_settings();
+        // save_settings();
+        //         DeviceSettings *settings = load_settings();
         snprintf(response_buffer, sizeof(response_buffer),
                  "{\"ssid\":\"%s\",\"password\":\"%s\",\"bleTarget\":\"%s\",\"initialized\":\"%d\"}\r\r\n",
-                 settings->ssid, settings->password, settings->bleTarget, settings->initialized);
+                 settings.ssid, settings.password, settings.bleTarget, settings.initialized);
         response = response_buffer;
     }
     else if ((length > 9 && (strncmp(req, "GET /pio=", 9) == 0)))
     {
         int pio = atoi(req + 9);
-        if(strstr(req,"toggle")){
-            pin(pio,1);
+        if (strstr(req, "toggle"))
+        {
+            pin(pio, 1);
         }
-        if(strstr(req,"press")){
-            pin(pio,1);
+        if (strstr(req, "press"))
+        {
+            pin(pio, 1);
             cyw43_delay_ms(500);
-            pin(pio,1);
+            pin(pio, 1);
         }
 
-        // Serve settings for config
-        printf("RESPOND_PIO\n");
+        // Serve pio
+        //        printf("RESPOND_PIO\n");
         header = HEADER_JSON;
 
         snprintf(response_buffer, sizeof(response_buffer),
-                 "{\"pio\":\"%d\",\"value\",%s}\r\r\n", pio, (pin(pio,false) ? "true" : "false"));
+                 "{\"pio\":\"%d\",\"value\",%s}\r\r\n", pio, (pin(pio, false) ? "true" : "false"));
         response = response_buffer;
+    }
+    else if ((length > 14 && (strncmp(req, "GET /dashboard ", 14) == 0)))
+    {
+        // Serve dashboard
+        //       printf("RESPOND_DASHBOARD\n");
+        response = RESPOND_DASHBOARD;
+    }
+    else if (length > 12 && (strncmp(req, "GET /config ", 12) == 0))
+    {
+        //       printf("RESPOND_FORM\n");
+        response = RESPOND_FORM;
     }
     else
     {
-        // 404 or ignore
-        tcp_close(tpcb);
-        pbuf_free(p);
-        return ERR_ABRT;
+        if (provisioning)
+        {
+            //          printf("RESPOND_FORM\n");
+            response = RESPOND_FORM;
+        }
+        else
+        {
+            // Serve dashboard
+            //           printf("RESPOND_DASHBOARD\n");
+            response = RESPOND_DASHBOARD;
+        }
     }
     if (header == NULL)
     {
@@ -259,6 +314,12 @@ static struct tcp_pcb *listen_pcb = NULL;
 
 bool webserver_init(bool _provisioning)
 {
+    static bool running = false;
+    if (running)
+    {
+        return true;
+    }
+    running = true;
     provisioning = _provisioning;
     listen_pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!listen_pcb)

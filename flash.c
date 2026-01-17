@@ -38,34 +38,34 @@ DeviceSettings *load_settings()
         // DATA IS INVALID: Set defaults
         printf("No valid settings found. Initializing defaults...\n");
         settings.version = SETTINGS_VERSION;
-        strncpy(settings.ssid, "_", 32);
-        strncpy(settings.password, "_", 64);
-        strncpy(settings.bleTarget, "_", 32);
+        strncpy(settings.ssid, "", 32);
+        strncpy(settings.password, "", 64);
+        strncpy(settings.bleTarget, "", 32);
         settings.initialized = false;
         strncpy(settings.device_id, this_id, 32);
     }
     else
     {
-        settings.initialized = true;
         // DATA IS VALID: Copied from flash to RAM
     }
     return &settings;
 }
 
-void save_settings()
+void save_settings(bool initialized)
 {
     settings.version = SETTINGS_VERSION;
     // Buffer must be a multiple of FLASH_PAGE_SIZE (256)
     uint8_t buffer[FLASH_PAGE_SIZE];
-    memset(buffer, 0, sizeof(buffer));
 
-    if (&settings != NULL)
+    if (initialized || settings.initialized)
     {
+        settings.initialized=true;
         memcpy(buffer, &settings, sizeof(DeviceSettings));
-        printf("Settings saved to flash.\n");
+//        printf("Settings saved to flash:\n%s\n%s\n%s\n",settings.ssid,settings.password,settings.bleTarget);
     }
     else
     {
+        memset(buffer, 0, sizeof(buffer));
         printf("Flash reset!\n");
     }
 
@@ -169,8 +169,9 @@ void ButtonPress()
     {
         // blank id to indicate uninitialized
 
-        save_settings();
         printf("Button held long enough, resetting settings.\n");
+        settings.initialized=false;
+        save_settings(false);
     }
     else
     {
@@ -184,10 +185,11 @@ void touchBase()
     if (watchdog_get_time_remaining_us() > RESET_TIME)
     {
         watchdog_enable(RESET_TIME, true);
+        printf("Button until connected to reset!\n");
+        sleep_ms(10);
     }
 
-    blink = !blink;
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, blink);
+    pin(32, true);
     watchdog_update();
 
     // Button Pressed: either reset settings or just reboot
@@ -195,6 +197,7 @@ void touchBase()
     {
         printf("Button Pressed! System will reboot. Hold for 15 seconds for flash reset.\n");
         ButtonPress();
+        sleep_ms(10);
     }
 }
 

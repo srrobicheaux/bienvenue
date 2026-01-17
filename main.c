@@ -24,10 +24,10 @@ bool AssignTeslaBLE_Name(char *target)
 }
 int main()
 {
-    DeviceSettings *settings;
     stdio_init_all();
     sleep_ms(2000); // Give serial time to open
     bool connected = false;
+    load_settings();
 
 #ifdef DEBUG
     printf("Debugging mode enabled\n");
@@ -37,50 +37,44 @@ int main()
     pico_get_unique_board_id_string(id_str, sizeof(id_str));
     printf("%s Starting on Pico ID: %s\n", CYW43_HOST_NAME, id_str);
 
-    settings = load_settings();
-    //    strcpy(settings->bleTarget,"LE-Bose Revolve+ SoundLink");
-    //    strcpy(settings->bleTarget,"N169A");
-
-    printf("Button until connected to reset!\n");
-    printf("Current Config:\tTarget:%s\tSSID:%s\n", settings->bleTarget, settings->ssid);
+    //    strcpy(settings.bleTarget,"LE-Bose Revolve+ SoundLink");
+    //    strcpy(settings.bleTarget,"N169A");
+    touchBase();
+    printf("Current Config:\tTarget:%s\tSSID:%s\n", settings.bleTarget, settings.ssid);
     sleep_ms(100);
-    if (settings->initialized)
-        while (!connected)
-        {
-            connected = ConnectNetwork(settings);
-            touchBase();
+    if (settings.initialized)
+    {
+        connected = ConnectNetwork(&settings);
+        touchBase();
+    }
+    if (!connected)
+    {
+        settings.initialized = false;
+        wifi_provisioning_start();
+    }
+    touchBase();
 
-            if (!connected)
-                wifi_provisioning_start();
-
-            touchBase();
-        }
     webserver_init(!connected); // Toggle responses based on AP or Wifi COnnection
     touchBase();
 
-    if (strlen(settings->bleTarget) == 0)
+    if (connected && strlen(settings.bleTarget) < 2)
     {
-        AssignTeslaBLE_Name(settings->bleTarget);
+        AssignTeslaBLE_Name(settings.bleTarget);
         touchBase();
     }
-    BLE_Init(settings->bleTarget, webserver_push_update);
+    BLE_Init(settings.bleTarget, webserver_push_update);
+    touchBase();
     radar_init();
-
+    touchBase();
     Detection det = {0};
 
-    touchBase();
-    while (true)
+    while (connected || !settings.initialized)
     {
         cyw43_bluetooth_hci_process(); // Your BLE work
         webserver_poll();              // Handle webserver lwIP worknsive
-        touchBase();
         radar_run_cycle();
         process_one_beam(CHIRP_LENGTH, &det);
+        touchBase();
     }
-    //    stop_http_server();
-    //    stop_dhcp_server();
-    //    dns_server_deinit();  // If you have it
-
-    return true;
     reset();
 }

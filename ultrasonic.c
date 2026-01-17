@@ -7,9 +7,11 @@
 #include "ultrasonic.h"
 #include "chirp.pio.h"
 
-#define COMPLEX_SAMPLE_RATE_HZ 31250.0f
+#define COMPLEX_SAMPLE_RATE_HZ 100000.0f
+
 #define SPEED_OF_SOUND_MPS 343.0f
 #define PICO_DEFAULT_LED_PIN 29
+#define CHIRP_PIN 5  // Physical Pin 7 is GPIO 5
 
 uint16_t adc_buffer_i[CHIRP_LENGTH];
 uint16_t adc_buffer_q[CHIRP_LENGTH];
@@ -23,7 +25,7 @@ void internal_chirp_init(PIO pio, uint sm, uint offset, uint pin)
     pio_sm_config c = chirp_program_get_default_config(offset);
 
     // CRITICAL: This MUST match the 'set pins' in the PIO code
-    sm_config_set_set_pins(&c, pin, 5);
+    sm_config_set_set_pins(&c, pin, 1);
 
     pio_gpio_init(pio, pin);
     pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
@@ -40,19 +42,20 @@ bool radar_init()
 {
     adc_init();
     // 1. Change GPIO from 26 to 27x
+gpio_set_pulls(27, true, false); // Pull-up only
     adc_gpio_init(27);
-    // gpio_set_pulls(27, false, true); // Enable both internal 50k pull-up and pull-down for bias
-        gpio_set_pulls(27, false, false); // Enable both internal 50k pull-up and pull-down for bias
 
     // 2. Select Input 1 (GPIO 27 is ADC1)
     adc_select_input(1);
 
     adc_fifo_setup(true, true, 1, false, false);
-    adc_set_clkdiv(1535);
+// 48,000,000 / 480 = 100,000 Hz (100kHz)
+adc_set_clkdiv(479); 
+// Then update your constant:
 
     uint offset = pio_add_program(pio_hw, &chirp_program);
     //    internal_chirp_init(pio_hw, sm, offset, 0);
-    internal_chirp_init(pio_hw, sm, offset, 4);
+    internal_chirp_init(pio_hw, sm, offset, CHIRP_PIN);
 
     dma_chan_i = dma_claim_unused_channel(true);
     dma_channel_config c_i = dma_channel_get_default_config(dma_chan_i);
@@ -114,7 +117,7 @@ void process_one_beam(int len, Detection *det)
 
     // skip_samples: Ignore "Main Bang" (transmitter ringing).
     // Increased to 220 because the 12V pulse rings longer.
-    const int skip_samples = 220;
+    const int skip_samples = 50;
 
     for (int i = skip_samples; i < len - 10; i++)
     {
@@ -147,9 +150,9 @@ void process_one_beam(int len, Detection *det)
 
     // Console Debug Output (every 10 samples for better visibility)
     static int debug_count = 0;
-    if (false && ++debug_count % 10 == 0)
+    if (++debug_count % 10 == 0)
     {
-        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
-               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
+//        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
+//               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
     }
 }

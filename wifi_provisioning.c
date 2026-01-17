@@ -49,6 +49,7 @@ bool wifi_provisioning_start()
     dns_server_init();
 
     printf("Provision System at:");
+    return true;
 }
 
 bool ConnectNetwork(DeviceSettings *settings)
@@ -67,7 +68,7 @@ bool ConnectNetwork(DeviceSettings *settings)
     cyw43_arch_enable_sta_mode();
     touchBase();
 
-    int error = cyw43_arch_wifi_connect_timeout_ms(settings->ssid, settings->password, CYW43_AUTH_WPA3_WPA2_AES_PSK, 15000);
+    int error = cyw43_arch_wifi_connect_timeout_ms(settings->ssid, settings->password, CYW43_AUTH_WPA3_WPA2_AES_PSK, 20000);
     if (error)
     {
         printf("Failed to connect to %s. Error# %d\n", settings->ssid, error);

@@ -8,7 +8,7 @@
     set x, 31           ; Send 32 pulses (800 microseconds)
     
 pulse_loop:
-    set pins, 5 [12]    ; Pin High, wait 12 cycles
+    set pins, 1 [12]    ; Pin High, wait 12 cycles
     set pins, 0 [12]    ; Pin Low,  wait 12 cycles
     jmp x-- pulse_loop  ; Repeat 32 times
 .wrap
