@@ -1,10 +1,9 @@
-// dashboard.html.h
 #define RESPOND_DASHBOARD R"RAWHTML(<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tesla Sync Node</title>
+    <title>Tesla Sync Node + Radar</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -14,9 +13,10 @@
             --text-secondary: #9ca3af;
             --accent-blue: #3b82f6;
             --accent-green: #10b981;
-            --accent-red: #ef4444;
+            --accent-purple: #8b5cf6;
             --accent-orange: #f59e0b;
             --border-color: #374151;
+            --btn-off: #374151;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,9 +32,9 @@
 
         .container {
             width: 100%;
-            max-width: 1000px;
+            max-width: 1200px;
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 20px;
         }
 
@@ -62,19 +62,62 @@
             display: flex;
             flex-direction: column;
             justify-content: space-between;
+            grid-column: span 1;
         }
 
         .card-label { font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
         .card-value { font-size: 2rem; font-weight: 700; }
         .card-sub { font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px; }
 
-        .card.full-width { grid-column: 1 / -1; min-height: 350px; }
+        .card.double { grid-column: span 2; }
+        .card.full-width { grid-column: 1 / -1; min-height: 250px; }
         
-        .card.log-card { grid-column: 1 / -1; min-height: auto; max-height: 400px; overflow: hidden; }
+        /* --- NEW CONTROL STYLES --- */
+        .card.controls {
+            grid-column: 1 / -1;
+            min-height: auto;
+            flex-direction: row;
+            align-items: center;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .gpio-btn {
+            flex: 1;
+            background-color: var(--btn-off);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+            padding: 15px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .gpio-btn:hover { background-color: #4b5563; }
+        .gpio-btn:active { transform: scale(0.98); }
+        
+        /* Active State */
+        .gpio-btn.on {
+            background-color: rgba(16, 185, 129, 0.2);
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+        
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; background-color: #6b7280; }
+        .gpio-btn.on .status-dot { background-color: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+
+        /* --- END CONTROL STYLES --- */
+
+        .card.log-card { grid-column: 1 / -1; min-height: auto; max-height: 300px; overflow: hidden; }
         .log-container {
             width: 100%;
             overflow-y: auto;
-            max-height: 300px;
+            max-height: 200px;
             border-top: 1px solid var(--border-color);
             margin-top: 10px;
         }
@@ -93,9 +136,13 @@
         .bar { width: 6px; background-color: #374151; border-radius: 2px; }
         .bar.active { background-color: var(--accent-green); }
 
-        @media (max-width: 600px) {
+        .unit { font-size: 1rem; color: var(--text-secondary); margin-left: 4px; }
+
+        @media (max-width: 800px) {
             .container { grid-template-columns: 1fr; }
-            .card-value { font-size: 1.75rem; }
+            .card.double { grid-column: span 1; }
+            .card.controls { flex-direction: column; }
+            .gpio-btn { width: 100%; }
         }
     </style>
 </head>
@@ -104,92 +151,151 @@
     <div class="container">
         <header>
             <h1>Tesla Sync Node</h1>
-            <div class="live-indicator"><div class="dot" id="conn-dot"></div> <span id="conn-text">Connecting...</span></div>
+            <div class="live-indicator">
+                <span id="rate-value" style="font-family:monospace; margin-right:10px">0 eps</span>
+                <div class="dot" id="conn-dot"></div> 
+                <span id="conn-text">Connecting...</span>
+            </div>
         </header>
 
-        <div class="card">
-            <div class="card-label">Vehicle Status</div>
-            <div class="card-value" id="status-value">WAITING</div>
-            <div class="card-sub">Tracking active</div>
+        <div class="card controls">
+            <button class="gpio-btn" id="btn-10" onclick="toggleGpio(10)">
+                <span>Relay 1 (GPIO 10)</span>
+                <div class="status-dot"></div>
+            </button>
+            <button class="gpio-btn" id="btn-12" onclick="toggleGpio(12)">
+                <span>Relay 2 (GPIO 12)</span>
+                <div class="status-dot"></div>
+            </button>
         </div>
 
-        <div class="card">
-            <div class="card-label">Signal Strength</div>
+        <div class="card double">
+            <div class="card-label">BLE Beacon Status</div>
+            <div class="card-value" id="status-value">WAITING</div>
+            <div class="card-sub">Tracking Trend</div>
+        </div>
+
+        <div class="card double">
+            <div class="card-label">BLE Signal Strength</div>
             <div style="display:flex; align-items:baseline;">
                 <div class="card-value" id="rssi-value">--</div>
-                <div class="card-value" style="font-size: 1rem; margin-left: 5px; color: var(--text-secondary);">dBm</div>
+                <span class="unit">dBm</span>
                 <div class="signal-bars" id="signal-bars">
-                    <div class="bar" style="height: 30%"></div>
-                    <div class="bar" style="height: 50%"></div>
-                    <div class="bar" style="height: 70%"></div>
-                    <div class="bar" style="height: 100%"></div>
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
                 </div>
             </div>
-            <div class="card-sub">Data Rate</div><div id="update-rate-value" style="font-family:monospace; color: var(--accent-green)">Computing...</div>
-        </div>
-
-        <div class="card">
-            <div class="card-label">Free Memory</div>
-            <div class="card-value"><span id="memory-value">--</span><span style="font-size:1.5rem">Bytes</span></div>
-        </div>
-
-        <div class="card">
-            <div class="card-label">Event Time</div>
-            <div class="card-value" id="time-value" style="font-size: 1.5rem; font-family: monospace;">00:00:00</div>
         </div>
 
         <div class="card full-width">
-            <div class="card-label">RSSI Trend (Live)</div>
+            <div class="card-label">RSSI Trend (History)</div>
             <div style="position: relative; height: 100%; width: 100%;">
                 <canvas id="rssiChart"></canvas>
             </div>
         </div>
 
+        <div class="card double">
+            <div class="card-label">Radar Distance</div>
+            <div style="display:flex; align-items:baseline;">
+                <div class="card-value" id="dist-value" style="color: var(--accent-purple)">--</div>
+                <span class="unit">mm</span>
+            </div>
+            <div class="card-sub">Peak Index: <span id="peak-idx">0</span></div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Echo Mag</div>
+            <div class="card-value" id="mag-value">--</div>
+            <div class="card-sub">Signal Power</div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Noise Floor</div>
+            <div class="card-value" id="noise-value">--</div>
+            <div class="card-sub">Interference</div>
+        </div>
+
+        <div class="card full-width">
+            <div class="card-label">Radar Magnitude (Real-time)</div>
+            <div style="position: relative; height: 100%; width: 100%;">
+                <canvas id="radarChart"></canvas>
+            </div>
+        </div>
+
         <div class="card log-card">
-            <div class="card-label">State Change Log</div>
+            <div class="card-label">System Log</div>
             <div class="log-container">
                 <table id="log-table">
                     <thead>
                         <tr>
                             <th>Time</th>
-                            <th>Previous State</th>
-                            <th>New State</th>
-                            <th>RSSI</th>
+                            <th>Type</th>
+                            <th>Details</th>
                         </tr>
                     </thead>
                     <tbody id="log-body">
-                        </tbody>
+                    </tbody>
                 </table>
             </div>
         </div>
     </div>
 
 <script>
-    const MAX_DATA_POINTS = 1000;
+    // --- GPIO CONTROL LOGIC ---
+    function toggleGpio(pin) {
+        // Optimistic UI update (optional, but makes it feel fast)
+        // const btn = document.getElementById('btn-' + pin);
+        // btn.style.opacity = "0.5"; 
+
+        fetch('/pio=' + pin + '?toggle')
+            .then(response => response.json())
+            .then(data => {
+                // Expecting: {"pio":"10","value":true}
+                const btn = document.getElementById('btn-' + data.pio);
+                if (data.value === true || data.value === "true") {
+                    btn.classList.add('on');
+                } else {
+                    btn.classList.remove('on');
+                }
+                btn.style.opacity = "1";
+                addLogEntry('GPIO', `GPIO ${data.pio} toggled to ${data.value}`);
+            })
+            .catch(err => {
+                console.error("GPIO Error", err);
+                addLogEntry('ERR', `Failed to toggle GPIO ${pin}`);
+            });
+    }
+
+    const MAX_POINTS = 200;
     let lastStatus = null; 
-    let lastTextUpdate = 0; // Throttle timestamp
+    let lastTextUpdate = 0; 
     
-    // FPS / Rate Counters
+    // FPS Counters
     let frameCount = 0;
     let lastRateCheck = Date.now();
 
     function formatTime(seconds) {
-        const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
-        const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
-        const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+        if(!seconds) return "00:00:00";
+        const sTotal = Math.floor(seconds / 1000000); 
+        const h = Math.floor(sTotal / 3600).toString().padStart(2, '0');
+        const m = Math.floor((sTotal % 3600) / 60).toString().padStart(2, '0');
+        const s = Math.floor(sTotal % 60).toString().padStart(2, '0');
         return `${h}:${m}:${s}`;
     }
 
-    function addLogEntry(prev, curr, rssi) {
+    function addLogEntry(type, msg) {
         const tbody = document.getElementById('log-body');
         const row = document.createElement('tr');
         const timeStr = new Date().toLocaleTimeString();
         
+        let color = '#fff';
+        if(type === 'BLE') color = 'var(--accent-blue)';
+        if(type === 'RADAR') color = 'var(--accent-purple)';
+        if(type === 'GPIO') color = 'var(--accent-green)';
+
         row.innerHTML = `
             <td class="log-time">${timeStr}</td>
-            <td>${prev || '-'}</td>
-            <td style="font-weight:bold">${curr}</td>
-            <td>${rssi} dBm</td>
+            <td style="color:${color}; font-weight:bold">${type}</td>
+            <td>${msg}</td>
         `;
         tbody.prepend(row);
         if (tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
@@ -204,23 +310,23 @@
         if (rssi > -55) bars[3].classList.add('active');
     }
 
-    const ctx = document.getElementById('rssiChart').getContext('2d');
-    const gradient = ctx.createLinearGradient(0, 0, 0, 400);
-    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
-    gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+    // --- CHART 1: RSSI ---
+    const ctxRssi = document.getElementById('rssiChart').getContext('2d');
+    const gradRssi = ctxRssi.createLinearGradient(0, 0, 0, 300);
+    gradRssi.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
+    gradRssi.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
 
-    const chart = new Chart(ctx, {
+    const chartRssi = new Chart(ctxRssi, {
         type: 'line',
         data: {
-            labels: Array(MAX_DATA_POINTS).fill(''),
+            labels: Array(MAX_POINTS).fill(''),
             datasets: [{
-                label: 'Signal (dBm)',
-                data: Array(MAX_DATA_POINTS).fill(null),
+                data: Array(MAX_POINTS).fill(null),
                 borderColor: '#3b82f6',
-                backgroundColor: gradient,
+                backgroundColor: gradRssi,
                 borderWidth: 2,
                 pointRadius: 0,
-                tension: 0.4,
+                tension: 0.3,
                 fill: true
             }]
         },
@@ -228,11 +334,42 @@
             responsive: true,
             maintainAspectRatio: false,
             animation: false, 
-            interaction: { mode: 'none' },
             plugins: { legend: { display: false } },
             scales: {
                 x: { display: false },
-                y: { min: -100, max: -30, grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+                y: { min: -100, max: -30, grid: { color: '#374151' } }
+            }
+        }
+    });
+
+    // --- CHART 2: RADAR ---
+    const ctxRadar = document.getElementById('radarChart').getContext('2d');
+    const gradRadar = ctxRadar.createLinearGradient(0, 0, 0, 300);
+    gradRadar.addColorStop(0, 'rgba(139, 92, 246, 0.5)');
+    gradRadar.addColorStop(1, 'rgba(139, 92, 246, 0.0)');
+
+    const chartRadar = new Chart(ctxRadar, {
+        type: 'line',
+        data: {
+            labels: Array(MAX_POINTS).fill(''),
+            datasets: [{
+                data: Array(MAX_POINTS).fill(null),
+                borderColor: '#8b5cf6',
+                backgroundColor: gradRadar,
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false, 
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: false },
+                y: { min: 0, max: 1000, grid: { color: '#374151' } }
             }
         }
     });
@@ -242,65 +379,65 @@
     const connText = document.getElementById('conn-text');
 
     evtSource.onopen = () => {
-        console.log("Connected");
         connDot.classList.add('active');
-        connText.textContent = "Live Feed Active";
+        connText.textContent = "Active";
     };
 
     evtSource.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
             const now = Date.now();
-            frameCount++; // Count every single packet
+            frameCount++;
 
-            // 1. UPDATE CHART (Always, for smooth lines)
-            const datasets = chart.data.datasets[0].data;
-            datasets.push(data.rssi);
-            datasets.shift();
-            
-            // Limit chart redraws to 30fps to prevent browser freeze if data is <10ms
-            if (now - lastTextUpdate > 33) {
-                 chart.update();
+            if ('peak' in data) {
+                const rData = chartRadar.data.datasets[0].data;
+                rData.push(data.magnitude);
+                rData.shift();
+
+                if (now - lastTextUpdate > 200) {
+                    document.getElementById('dist-value').textContent = data.mm;
+                    document.getElementById('mag-value').textContent = data.magnitude;
+                    document.getElementById('noise-value').textContent = data.noise;
+                    document.getElementById('peak-idx').textContent = data.peak;
+                }
             }
 
-            // 2. RATE CALCULATION (Events Per Second)
+            if ('rssi' in data) {
+                const bData = chartRssi.data.datasets[0].data;
+                bData.push(data.rssi);
+                bData.shift();
+
+                if (now - lastTextUpdate > 200) {
+                    document.getElementById('rssi-value').textContent = data.rssi;
+                    updateSignalBars(data.rssi);
+
+                    let fullTrend = 'UNCONNECTED';
+                    if (data.trend === "STARTED") fullTrend = 'SCANNING';
+                    else if (parseInt(data.trend) > 0) fullTrend = 'APPROACHING';
+                    else if (parseInt(data.trend) < 0) fullTrend = 'LEAVING';
+                    else fullTrend = 'STATIONARY';
+
+                    const statusEl = document.getElementById('status-value');
+                    statusEl.textContent = fullTrend;
+                    statusEl.className = 'card-value ' + fullTrend.toLowerCase();
+
+                    if (lastStatus !== fullTrend) {
+                        addLogEntry('BLE', `Status: ${fullTrend} (${data.rssi}dBm)`);
+                        lastStatus = fullTrend;
+                    }
+                }
+            }
+
+            if (now - lastTextUpdate > 200) {
+                chartRssi.update();
+                chartRadar.update();
+                lastTextUpdate = now;
+            }
+
             if (now - lastRateCheck >= 1000) {
-                const fps = frameCount; // Packets in the last second
-                document.getElementById('update-rate-value').textContent = fps + " events/sec";
+                document.getElementById('rate-value').textContent = frameCount + " eps";
                 frameCount = 0;
                 lastRateCheck = now;
-            }
-
-            // 3. LOGIC & TEXT UPDATES (Throttled to 500ms)
-            // This prevents the numbers from being a blur
-            if (now - lastTextUpdate > 500) {
-                document.getElementById('rssi-value').textContent = data.rssi;
-                updateSignalBars(data.rssi);
-
-                if(data.memory) document.getElementById('memory-value').textContent = data.memory;
-                // Assuming data.time is microseconds, convert to HH:MM:SS
-                if(data.time) {
-                    const sec = Math.floor(data.time / 1000000); 
-                    document.getElementById('time-value').textContent = formatTime(sec);
-                }
-
-                // Trend Logic
-                let fullTrend = 'UNCONNECTED';
-                if (data.trend > 0) fullTrend = 'APPROACHING';
-                else if (data.trend < 0) fullTrend = 'LEAVING';
-                else if (data.trend == 0) fullTrend = 'STATIONARY';
-
-                const statusEl = document.getElementById('status-value');
-                statusEl.textContent = fullTrend;
-                statusEl.className = 'card-value ' + fullTrend.toLowerCase();
-
-                // Logging Logic (Only log if status ACTUALLY changed)
-                if (lastStatus !== null && lastStatus !== fullTrend) {
-                    addLogEntry(lastStatus, fullTrend, data.rssi);
-                }
-                lastStatus = fullTrend;
-                
-                lastTextUpdate = now;
             }
 
         } catch (e) {
@@ -310,7 +447,7 @@
 
     evtSource.onerror = () => {
         connDot.classList.remove('active');
-        connText.textContent = "Connection Lost - Retrying...";
+        connText.textContent = "Reconnecting...";
     };
 
 </script>

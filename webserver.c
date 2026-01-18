@@ -153,7 +153,7 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         return ERR_OK;
     }
 
-    int length = MIN(p->len, sizeof(req));
+    int length = MIN(p->len, sizeof(req)-1);
     if (p->len > sizeof(req))
     {
         printf("Request of %d length truncated to %d prevent buf overflow.\n", p->len, length);

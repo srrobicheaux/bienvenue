@@ -18,6 +18,7 @@ extern uint16_t adc_buffer_q[CHIRP_LENGTH];
 
 bool radar_init(void);
 void radar_run_cycle(void);
-void process_one_beam(int len, Detection *det);
+void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t size));
+
 
 #endif

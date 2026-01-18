@@ -73,7 +73,7 @@ int main()
         cyw43_bluetooth_hci_process(); // Your BLE work
         webserver_poll();              // Handle webserver lwIP worknsive
         radar_run_cycle();
-        process_one_beam(CHIRP_LENGTH, &det);
+        process_one_beam(CHIRP_LENGTH, &det, webserver_push_update);
         touchBase();
     }
     reset();

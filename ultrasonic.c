@@ -6,12 +6,13 @@
 #include "hardware/clocks.h" // <--- ADDED THIS TO FIX ERRORS
 #include "ultrasonic.h"
 #include "chirp.pio.h"
+#include <string.h>
 
 #define COMPLEX_SAMPLE_RATE_HZ 100000.0f
 
 #define SPEED_OF_SOUND_MPS 343.0f
 #define PICO_DEFAULT_LED_PIN 29
-#define CHIRP_PIN 5  // Physical Pin 7 is GPIO 5
+#define CHIRP_PIN 5 // Physical Pin 7 is GPIO 5
 
 uint16_t adc_buffer_i[CHIRP_LENGTH];
 uint16_t adc_buffer_q[CHIRP_LENGTH];
@@ -42,16 +43,16 @@ bool radar_init()
 {
     adc_init();
     // 1. Change GPIO from 26 to 27x
-gpio_set_pulls(27, true, false); // Pull-up only
+    gpio_set_pulls(27, true, false); // Pull-up only
     adc_gpio_init(27);
 
     // 2. Select Input 1 (GPIO 27 is ADC1)
     adc_select_input(1);
 
     adc_fifo_setup(true, true, 1, false, false);
-// 48,000,000 / 480 = 100,000 Hz (100kHz)
-adc_set_clkdiv(479); 
-// Then update your constant:
+    // 48,000,000 / 480 = 100,000 Hz (100kHz)
+    adc_set_clkdiv(479);
+    // Then update your constant:
 
     uint offset = pio_add_program(pio_hw, &chirp_program);
     //    internal_chirp_init(pio_hw, sm, offset, 0);
@@ -87,7 +88,7 @@ void radar_run_cycle()
 /**
  * Process the ADC buffer to find the strongest echo.
  */
-void process_one_beam(int len, Detection *det)
+void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t size))
 {
     // 1. DYNAMIC AUTO-CALIBRATION
     // We sample the first few values to find the DC center (Bias).
@@ -152,7 +153,21 @@ void process_one_beam(int len, Detection *det)
     static int debug_count = 0;
     if (++debug_count % 10 == 0)
     {
-//        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
-//               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
+        char ultra_payload[256];
+
+        snprintf(ultra_payload, sizeof(ultra_payload),
+                 "data: {\"mm\":%d,\"time\":%llu,\"peak\":%d,\"magnitude\":%lld,\"noise\":%lld}\r\r\n",
+                  det->distance_mm,get_absolute_time(), max_idx, max_mag_sq, noise_floor);
+//                 data: {"rssi":-62,"time":26192933,"trend":"0"}
+
+#ifdef DEBUG
+
+        printf("Ultrasound:%s\n", payload);
+#endif
+//        printf("Ultrasound:%s\n", payload);
+        notifer(ultra_payload, strlen(ultra_payload));
+
+        //        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
+        //               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
     }
 }
