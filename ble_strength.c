@@ -6,11 +6,11 @@
 #include "regression.h"
 
 #include <stdio.h>
-// #define DEBUG
+#define DEBUG 1
 
 #define OUT_OF_GARAGE_DB -75
 #define MAX_AGE_UNSEEN 5000000 // 5 seconds in microseconds
-// #define TRIGGER_DB .3
+#define TRIGGER_DB .3
 //  #define TRIGGER_DB .2
 // #define MIN_TREND 1000000
 
@@ -18,12 +18,14 @@
 
 const void (*notify)(char *json, size_t size);
 
-bd_addr_t bleAddress;
-char *bleName; // Points to settings->bleTarget
-
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 
-bool DiscoveryMAC(uint8_t *packet, bd_addr_t address)
+bool bleAddressSet()
+{
+ return (settings.bleAddress[0] + settings.bleAddress[1] + settings.bleAddress[2] +settings.bleAddress[3]);
+}
+
+int DiscoveryName(uint8_t *packet, char *device_name, size_t size)
 {
     // CASE 2: No MAC yet, searching by Name
     uint8_t adv_data_len = gap_event_advertising_report_get_data_length(packet);
@@ -38,32 +40,20 @@ bool DiscoveryMAC(uint8_t *packet, bd_addr_t address)
 
         if (type == BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME || type == BLUETOOTH_DATA_TYPE_SHORTENED_LOCAL_NAME)
         {
-// list names of BLE devices
-#ifdef DEBUG
-            char name[len];
-            memcpy(name, data, len);
-            name[len] = '\0';
-            printf("Looking for %s, found %s - %s\n", bleName, bd_addr_to_str_with_delimiter(address, ':'), name);
-#endif
-
-            if (bleName[0] != '\0' && memcmp(data, bleName, len) == 0)
-            {
-                bd_addr_copy(bleAddress, address);
-                DeviceSettings *update = load_settings();
-                strcpy(settings.bleTarget, bd_addr_to_str(address));
-                printf("Replacing BLE Target %s with MAC - %s\n", bleName, update->bleTarget);
-                return true;
-            }
+            int length = MIN(size - 1, len);
+            strncpy(device_name, data, length);
+            device_name[length] = '\0';
+            return length;
         }
     }
-    return false;
+    return 0;
 }
 
 // --- BLE Callback ---
 void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
 {
-    char payload[128];
-    static bool bleAddressSet = false;
+    static char payload[256];
+    static char name[64];
 
     if (packet_type != HCI_EVENT_PACKET)
         return;
@@ -74,39 +64,42 @@ void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint
         gap_event_advertising_report_get_address(packet, address);
         int8_t rssi = gap_event_advertising_report_get_rssi(packet);
 
-        //        printf("%s\n",bd_addr_to_str(bleAddress));
-        // CASE 1: No MAC yet, searching by Name
-        if (!bleAddressSet)
+        name[0] = '\0';
+        if (!bleAddressSet())
         {
-            bleAddressSet = sscanf_bd_addr(bleName, bleAddress);
-            if (!bleAddressSet)
+            // see if name is actually a MAC address and if so use it.
+            if (DiscoveryName(packet, name, 64))
             {
-                bleAddressSet = DiscoveryMAC(packet, address);
+                if (strcasecmp(name, settings.bleName) == 0)
+                {
+                    printf("Found %s at MAC:%s\n", settings.bleName, bd_addr_to_str(address));
+                    bd_addr_copy(settings.bleAddress, address);
+                    save_settings();
+                }
             }
         }
-        if (bd_addr_cmp(address, bleAddress) == 0)
+
+        if (!bleAddressSet() || (bd_addr_cmp(address, settings.bleAddress) == 0))
         {
             float trend = get_gaussian_trend(rssi);
-            snprintf(payload, sizeof(payload),
-                     "data: {\"rssi\":%d,\"time\":%u,\"trend\":\"%d\"}\r\r\n",
-                     rssi, get_absolute_time(), trend);
-#ifdef DEBUG
+            //            float trend = 0;
 
-            printf("BLE:%s\n", payload);
-#endif
+            snprintf(payload, sizeof(payload),
+                     "data: {\"type\":\"BLE\",\"MAC\":\"%s\",\"rssi\":%d,\"time_s\":%llu,\"trend\":\"%f\",\"name\":\"%s\"}\r\r\n",
+                     bd_addr_to_str(address), rssi, get_absolute_time(), trend,
+                     bleAddressSet() ? settings.bleName : name);
             notify(payload, strlen(payload));
         }
     }
 }
 
-bool BLE_Init(char *Target_Name, void (*notifer)(char *json, size_t size))
+bool BLE_Init(void (*notifer)(char *json, size_t size))
 {
     // Initialize BTstack (Standard boiler plate)
-    bleName = Target_Name;
     notify = notifer;
-    bool bleAddressSet = sscanf_bd_addr(bleName, bleAddress);
 #ifdef DEBUG
-    printf("Bluetooth scanning started for %s.\n", (bleAddressSet) ? bd_addr_to_str_with_delimiter(bleAddress, ':') : bleName);
+    printf("BLE Target:\t%s.\n", (bleAddressSet()) ? bd_addr_to_str(settings.bleAddress) : settings.bleName);
+    printf("BLE MAC:\t%s.\n", bd_addr_to_str(settings.bleAddress));
 #endif
 
     l2cap_init();
@@ -114,9 +107,9 @@ bool BLE_Init(char *Target_Name, void (*notifer)(char *json, size_t size))
     hci_event_callback_registration.callback = &packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
     hci_power_control(HCI_POWER_ON);
-    //    gap_set_local_name(CYW43_HOST_NAME);
+    // gap_set_local_name(CYW43_HOST_NAME);
     gap_set_scan_duplicate_filter(0);
-    gap_set_scan_params(!bleAddressSet, 0x0030, 0x0030, 0);
+    gap_set_scan_params(!bleAddressSet(), 0x0030, 0x0030, 0);
     gap_start_scan();
-    return bleAddressSet;
+    return bleAddressSet();
 }

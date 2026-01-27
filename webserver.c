@@ -15,9 +15,10 @@
 #include "html.wifisuccess.h"
 
 #define HTTP_PORT 80
+// #define DEBUG 1
 
 // other responses defined n the html files
-#define RESPOND_SSE "data: {\"rssi\":-70,\"trend\":\"STARTED\",\"uptime\":0}\r\r\n"
+#define RESPOND_SSE "data: {\"trend\":\"STARTED\",\"uptime\":0}\r\r\n"
 #define HEADER_CONTINUE "HTTP/1.1 100 Continue\r\n\r\n"
 // this one needs to be modifiable to add length
 #define HEADER_SUCCESS            \
@@ -38,6 +39,11 @@
     "Cache-Control: no-cache\r\n"         \
     "Connection: keep-alive\r\n"          \
     "Access-Control-Allow-Origin: *\r\n\r\n"
+#define HEADER_REDIRECT                 \
+    "HTTP/1.1 302 Found\r\n"            \
+    "Location: http://192.168.4.1/\r\n" \
+    "Content-Length: 0\r\n"             \
+    "Connection: close\r\n\r\n";
 
 // SSE clients (simple single-client for now – extend to list if needed)
 static struct tcp_pcb *sse_client = NULL;
@@ -108,7 +114,6 @@ bool parser(char *haystack, const char *needle, char *destination, size_t dest_m
         {
             char *value = ptr + needle_len + 1;
             int len = strcspn(value, "&\0");
-
             if (len == 0)
             {
                 destination[0] = '\0';
@@ -133,7 +138,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     char header_buffer[256];
     char *response = NULL;
     char response_buffer[256];
-    char req[1461];
+    char req[1465];
+    // char req[256];
 
     if (err != ERR_OK || p == NULL)
     {
@@ -146,20 +152,14 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
 
     tcp_recved(tpcb, p->tot_len);
 
-    if (p->len == 0 || (strncmp(p->payload, "GET /f", 6) == 0))
-    {
-        tcp_close(tpcb);
-        pbuf_free(p);
-        return ERR_OK;
-    }
-
-    int length = MIN(p->len, sizeof(req)-1);
-    if (p->len > sizeof(req))
+    int length = MIN(p->len, sizeof(req) - 1);
+    if (p->len > sizeof(req) - 1)
     {
         printf("Request of %d length truncated to %d prevent buf overflow.\n", p->len, length);
     }
     memcpy(req, p->payload, length);
     req[length] = '\0';
+        printf("req:[%d]%s\n", length,req);
 
     // fragmented
     if (p->tot_len != p->len)
@@ -174,35 +174,44 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
     else if (responding || (length > 6 && strncmp(req, "POST /", 6) == 0))
     {
+        char posted[256];
         responding = true;
-        bool changed = false;
+        char *body = strstr(req, "\r\n\r\n") + 4;
 
         // 1. Decode the whole request buffer ONCE
-        url_decode(req, req);
+        url_decode(posted, body);
 
-        // 2. Now parse the keys from the clean, decoded string
-        parser(req, "_ssid", settings.ssid, 32);
-        parser(req, "_password", settings.password, 64);
-        changed = changed || parser(req, "_BLE_target", settings.bleTarget, 32);
-        if (changed)
+        bool ss, pw, bt = false;
+        // 2. Now parse the keys from the clean, decoded string. If you find anyof them save.
+        ss = parser(posted, "_ssid", settings.ssid, 32);
+        pw = parser(posted, "_password", settings.password, 64);
+        bt = parser(posted, "_bleName", settings.bleName, 32);
+        
+        if (ss && pw && bt)
         {
+            memset(settings.bleAddress, '\0', sizeof(settings.bleAddress));
             responding = false;
             save_settings(true); // Save (don't blank) immediately
-            //            printf("RESPOND_SUCCESS\n");
             if (provisioning)
             {
                 response = RESPOND_SUCCESS;
             }
-            else {
+            else
+            {
                 response = RESPOND_DASHBOARD;
             }
         }
         else
         {
-            //            tcp_close(tpcb);
+            //            tcp_close(tpcb);//this was previously commented out
             pbuf_free(p);
             return ERR_OK;
         }
+    }
+    else if (length > 5 && strncmp(req, "GET /",5) && !strstr(req, "Host: 192.168.4.1"))
+    {
+
+        header = HEADER_REDIRECT;
     }
     else if (length > 12 && strncmp(req, "GET /events ", 12) == 0)
     {
@@ -225,8 +234,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         // save_settings();
         //         DeviceSettings *settings = load_settings();
         snprintf(response_buffer, sizeof(response_buffer),
-                 "{\"ssid\":\"%s\",\"password\":\"%s\",\"bleTarget\":\"%s\",\"initialized\":\"%d\"}\r\r\n",
-                 settings.ssid, settings.password, settings.bleTarget, settings.initialized);
+                 "{\"ssid\":\"%s\",\"password\":\"%s\",\"bleName\":\"%s\"}\r\r\n",
+                 settings.ssid, settings.password, settings.bleName);
         response = response_buffer;
     }
     else if ((length > 9 && (strncmp(req, "GET /pio=", 9) == 0)))
@@ -262,6 +271,21 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         //       printf("RESPOND_FORM\n");
         response = RESPOND_FORM;
     }
+    else if (length > 11 && (strncmp(req, "GET /stats ", 11) == 0))
+    {
+
+        header = HEADER_JSON;
+        snprintf(response_buffer, sizeof(response_buffer),
+                 "{\"key\":\"%s\",\"value\",%s}\r\r\n", "Temporary", "true");
+        response = response_buffer;
+    }
+    else if (length == 6 || (strncmp(p->payload, "GET /f", length) == 6))
+    {
+        tcp_close(tpcb);
+        pbuf_free(p);
+        return ERR_OK;
+    }
+
     else
     {
         if (provisioning)
@@ -280,10 +304,13 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     {
         header = HEADER_SUCCESS;
     }
-
-    int len = strlen(response);
     if (strstr(header, "Content-Length:") != 0)
     {
+        int len = 0;
+        if (response != NULL)
+        {
+            len = strlen(response);
+        }
         snprintf(header_buffer, strlen(header) + 6, header, len);
         header = header_buffer;
     }
@@ -337,7 +364,7 @@ bool webserver_init(bool _provisioning)
         return false;
 
     tcp_accept(listen_pcb, http_accept_cb);
-    printf(" http://%s\n", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+    printf("http://%s\n", ip4addr_ntoa(netif_ip4_addr(netif_default)));
     return true;
 }
 
@@ -363,7 +390,10 @@ void webserver_push_update(char *msg, size_t size)
     else
     {
         // Buffer full – drop client
+        printf("Dropped SSE\n");
         sse_client = NULL;
     }
+    touchBase();
+
     cyw43_arch_lwip_end();
 }

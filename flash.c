@@ -2,15 +2,17 @@
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "hardware/adc.h"
+#include "hardware/watchdog.h"
 #include "pico/stdio.h"
 #include "pico/unique_id.h"
-#include "hardware/watchdog.h"
 #include "pico/cyw43_arch.h"
+#include "malloc.h"
+#include "flash.h"
+#include "regression.h"
 
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "flash.h"
 
 #include "hardware/gpio.h"
 #include "hardware/structs/ioqspi.h"
@@ -28,53 +30,97 @@ DeviceSettings settings;
 
 DeviceSettings *load_settings()
 {
-    char this_id[32];
-    pico_get_unique_board_id_string(this_id, 32);
-
+        char id_str[32];
+    pico_get_unique_board_id_string(id_str, sizeof(id_str));
+    printf("%s ID:\t%s\n", CYW43_HOST_NAME, id_str);
     memcpy(&settings, flash_data, sizeof(DeviceSettings));
+
     // Check if the ID number matches
-    if (strcmp(settings.device_id, this_id) != 0)
+    if (strcmp(settings.device_id, id_str) != 0)
     {
         // DATA IS INVALID: Set defaults
         printf("No valid settings found. Initializing defaults...\n");
         settings.version = SETTINGS_VERSION;
         strncpy(settings.ssid, "", 32);
         strncpy(settings.password, "", 64);
-        strncpy(settings.bleTarget, "", 32);
-        settings.initialized = false;
-        strncpy(settings.device_id, this_id, 32);
+        strncpy(settings.bleName, "", 32);
+        settings.position = 0;
+        strncpy(settings.device_id, id_str, 32);
+        memchr(settings.bleAddress,'\0',sizeof(bd_addr_t));
+
+        printf("Settings:\tInitializing %s\n",bd_addr_to_str(settings.bleAddress));
     }
     else
     {
+        printf("Settings:\tLoaded\n");
         // DATA IS VALID: Copied from flash to RAM
     }
     return &settings;
 }
-
-void save_settings(bool initialized)
+void saveorreset_settings(bool reset)
 {
-    settings.version = SETTINGS_VERSION;
     // Buffer must be a multiple of FLASH_PAGE_SIZE (256)
     uint8_t buffer[FLASH_PAGE_SIZE];
 
-    if (initialized || settings.initialized)
+    if (!reset)
     {
-        settings.initialized=true;
+        printf("Saving %s\n", settings.ssid);
         memcpy(buffer, &settings, sizeof(DeviceSettings));
-//        printf("Settings saved to flash:\n%s\n%s\n%s\n",settings.ssid,settings.password,settings.bleTarget);
+        printf("Settings:\tSaved\n");
     }
     else
     {
-        memset(buffer, 0, sizeof(buffer));
-        printf("Flash reset!\n");
+        printf("Settings:\tReset\n");
     }
 
     uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(FLASH_TARGET_OFFSET, buffer, FLASH_PAGE_SIZE);
+    if (!reset) {
+        flash_range_program(FLASH_TARGET_OFFSET, buffer, FLASH_PAGE_SIZE);
+    }
     restore_interrupts(ints);
 }
+void save_settings(){
+    //only expost reset to flash.c
+    saveorreset_settings(false);
+}
+void format()
+{
+    int sector = 1;
+    while (PICO_FLASH_SIZE_BYTES < FLASH_TARGET_OFFSET + (FLASH_SECTOR_SIZE * sector))
+    {
+        flash_range_erase(FLASH_TARGET_OFFSET + (FLASH_SECTOR_SIZE * sector), FLASH_SECTOR_SIZE);
+        printf("Formated Sector:%d\n", sector);
+        stdio_flush();
+        sleep_ms(10);
+        sector++;
+    }
+}
 
+#define PAGES__PER_SAVE 8 //Valid options [1,2,4,8,16 =] 16 pages per sector and must be a multiple of sector (4096 bytes) 
+void save_history(uint8_t *buffer)
+{
+    uint32_t ints = save_and_disable_interrupts();
+    if ((settings.position % (16/PAGES__PER_SAVE)) == 0)
+    {
+        int sector = (settings.position / (16/PAGES__PER_SAVE));
+        // skip first sector to reserve it for settings
+        flash_range_erase(FLASH_TARGET_OFFSET + FLASH_SECTOR_SIZE + (PAGES__PER_SAVE * FLASH_PAGE_SIZE * settings.position), FLASH_SECTOR_SIZE);
+    }
+    flash_range_program(FLASH_TARGET_OFFSET + FLASH_SECTOR_SIZE + (PAGES__PER_SAVE * FLASH_PAGE_SIZE * settings.position), buffer, FLASH_PAGE_SIZE*PAGES__PER_SAVE);
+    restore_interrupts(ints);
+    printf("Saved:%d bytes @ position:%d\n", sizeof(ble_event_t), settings.position);
+    settings.position = settings.position + 1;
+    //flash drive is full loop around to write over earlier data
+    if (settings.position > 637 * (16/PAGES__PER_SAVE))
+    {
+         settings.position =0;
+    }
+}
+const uint8_t *read_history(int position)
+{
+    return (const uint8_t *)XIP_BASE + FLASH_TARGET_OFFSET + FLASH_SECTOR_SIZE + (8 *FLASH_PAGE_SIZE * position);
+}
 /**
  * Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
  *
@@ -131,26 +177,69 @@ bool __no_inline_not_in_flash_func(get_bootsel_button)()
 
 float ChipTemp()
 {
-    // Select the ADC input for the temperature sensor (channel 4)
-    adc_select_input(8);
+    // 1. Initialize the ADC hardware (if not done already in main)
+    // adc_init();
 
-    // Read the raw ADC value (12-bit conversion)
+    // 2. CRITICAL: Enable the internal temperature sensor
+    adc_set_temp_sensor_enabled(true);
+
+    // 3. Select ADC input 4 (Internal Temp Sensor for Pico 1 & Pico 2)
+    adc_select_input(ADC_TEMPERATURE_CHANNEL_NUM);
+
+    // 4. Read raw value
     uint16_t raw_result = adc_read();
 
-    // Conversion factor for 3.3V reference, 12-bit resolution
+    // 5. Convert to voltage
     const float conversion_factor = 3.3f / (1 << 12);
-
-    // Convert raw reading to voltage
     float voltage = raw_result * conversion_factor;
 
-    // Apply the formula from the RP2040 datasheet (Chapter 4.9.5)
-    // T = 27 - (ADC_Voltage - 0.706)/0.001721
+    // 6. Calculate Temperature (Formula is valid for RP2040 & RP2350)
     float temperature_celsius = 27.0f - (voltage - 0.706f) / 0.001721f;
 
-    return temperature_celsius;
+    return 9 / 5 * temperature_celsius + 32;
 }
 
-bool blink = false;
+// These are defined by the linker script
+extern char __flash_binary_start;
+extern char __flash_binary_end;
+
+void get_memory_stats(uint32_t *ram_used, uint32_t *ram_total, uint32_t *flash_used, uint32_t *flash_total)
+{
+    // --- RAM (HEAP) USAGE ---
+    // mallinfo() is a standard C library function to report heap status
+    struct mallinfo m = mallinfo();
+
+    // uordblks = Total allocated space (used)
+    // fordblks = Total free space
+    *ram_used = m.uordblks;
+    *ram_total = m.uordblks + m.fordblks; // Total Heap available to your app
+
+    // --- FLASH USAGE ---
+    // Calculate the size of the binary by subtracting the end address from the start
+    *flash_used = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
+
+    // The Pico 2 W typically has 4MB of Flash (check your specific board specs)
+    // You can also use PICO_FLASH_SIZE_BYTES if defined in board header
+    *flash_total = 4 * 1024 * 1024;
+}
+
+void send_status_event(void (*notifer)(char *json, size_t size))
+{
+    uint32_t ram_used, ram_total, flash_used, flash_total;
+    get_memory_stats(&ram_used, &ram_total, &flash_used, &flash_total);
+
+    float ram_pct = (float)ram_used / ram_total * 100.0f;
+    float flash_pct = (float)flash_used / flash_total * 100.0f;
+
+    static char buffer[256];
+    snprintf(buffer, sizeof(buffer),
+             "data: {\"type\":\"sys\", \"ram_used\":%lu, \"ram_total\":%lu, \"ram_pct\":%.1f, \"flash_pct\":%.1f,\"temp_f\":%.2f}\r\r\n",
+             // Correct JSON format: uses ':' for value and ends with single '}'
+             ram_used, ram_total, ram_pct, flash_pct, ChipTemp());
+    notifer(buffer, strlen(buffer));
+    //        printf("Memory:%s\n", buffer);
+}
+
 void reset()
 {
     watchdog_enable(10, true); // true = reset on timeout
@@ -170,8 +259,7 @@ void ButtonPress()
         // blank id to indicate uninitialized
 
         printf("Button held long enough, resetting settings.\n");
-        settings.initialized=false;
-        save_settings(false);
+        saveorreset_settings(true);// Reset Flash
     }
     else
     {
@@ -182,14 +270,17 @@ void ButtonPress()
 
 void touchBase()
 {
-    if (watchdog_get_time_remaining_us() > RESET_TIME)
+    static bool initial = true;
+    static bool blink = false;
+    blink = !blink;
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, blink);
+
+    if (initial)
     {
         watchdog_enable(RESET_TIME, true);
-        printf("Button until connected to reset!\n");
-        sleep_ms(10);
+        initial = false;
     }
 
-    pin(32, true);
     watchdog_update();
 
     // Button Pressed: either reset settings or just reboot

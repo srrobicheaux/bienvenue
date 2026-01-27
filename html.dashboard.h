@@ -43,13 +43,35 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
             margin-bottom: 10px;
         }
 
-        h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.5px; }
+        h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.5px; margin-right: auto; }
+        
+        /* --- SYS INFO BAR --- */
+        .header-stats {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            background: rgba(255,255,255,0.05);
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .sys-item { display: flex; gap: 6px; }
+        .sys-val { color: var(--text-primary); font-weight: 600; }
+        /* ------------------- */
+
         .live-indicator { 
             font-size: 0.8rem; color: var(--text-secondary); 
             display: flex; align-items: center; gap: 6px; 
+            font-family: monospace;
         }
         .dot { width: 8px; height: 8px; background-color: var(--text-secondary); border-radius: 50%; }
         .dot.active { background-color: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
@@ -68,11 +90,10 @@
         .card-label { font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
         .card-value { font-size: 2rem; font-weight: 700; }
         .card-sub { font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px; }
-
         .card.double { grid-column: span 2; }
         .card.full-width { grid-column: 1 / -1; min-height: 250px; }
         
-        /* --- NEW CONTROL STYLES --- */
+        /* CONTROLS */
         .card.controls {
             grid-column: 1 / -1;
             min-height: auto;
@@ -81,7 +102,6 @@
             gap: 20px;
             padding: 20px;
         }
-
         .gpio-btn {
             flex: 1;
             background-color: var(--btn-off);
@@ -97,22 +117,12 @@
             justify-content: space-between;
             align-items: center;
         }
-
         .gpio-btn:hover { background-color: #4b5563; }
-        .gpio-btn:active { transform: scale(0.98); }
-        
-        /* Active State */
-        .gpio-btn.on {
-            background-color: rgba(16, 185, 129, 0.2);
-            border-color: var(--accent-green);
-            color: var(--accent-green);
-        }
-        
+        .gpio-btn.on { background-color: rgba(16, 185, 129, 0.2); border-color: var(--accent-green); color: var(--accent-green); }
         .status-dot { width: 10px; height: 10px; border-radius: 50%; background-color: #6b7280; }
         .gpio-btn.on .status-dot { background-color: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
 
-        /* --- END CONTROL STYLES --- */
-
+        /* LOGS */
         .card.log-card { grid-column: 1 / -1; min-height: auto; max-height: 300px; overflow: hidden; }
         .log-container {
             width: 100%;
@@ -124,25 +134,22 @@
         table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
         th { text-align: left; color: var(--text-secondary); padding: 10px; border-bottom: 1px solid var(--border-color); font-weight: 500; }
         td { padding: 10px; border-bottom: 1px solid #2a2e33; color: var(--text-primary); }
-        tr:last-child td { border-bottom: none; }
         .log-time { font-family: monospace; color: var(--accent-blue); }
 
         #status-value.approaching { color: var(--accent-blue); }
         #status-value.leaving { color: var(--accent-orange); }
         #status-value.stationary { color: var(--text-secondary); }
         #status-value.connected { color: var(--accent-green); }
-
         .signal-bars { display: inline-flex; gap: 3px; height: 20px; align-items: flex-end; margin-left: 10px; }
         .bar { width: 6px; background-color: #374151; border-radius: 2px; }
         .bar.active { background-color: var(--accent-green); }
-
         .unit { font-size: 1rem; color: var(--text-secondary); margin-left: 4px; }
 
         @media (max-width: 800px) {
             .container { grid-template-columns: 1fr; }
             .card.double { grid-column: span 1; }
             .card.controls { flex-direction: column; }
-            .gpio-btn { width: 100%; }
+            .header-stats { display: none; } /* Hide technical stats on mobile to save space */
         }
     </style>
 </head>
@@ -151,8 +158,24 @@
     <div class="container">
         <header>
             <h1>Tesla Sync Node</h1>
+            
+            <div class="header-stats">
+                <div class="sys-item">
+                    <span>CPU:</span>
+                    <span id="sys-temp" class="sys-val">--°F</span>
+                </div>
+                <div class="sys-item">
+                    <span>RAM:</span>
+                    <span id="sys-ram" class="sys-val">--%</span>
+                </div>
+                <div class="sys-item">
+                    <span>DSK:</span>
+                    <span id="sys-flash" class="sys-val">--%</span>
+                </div>
+            </div>
+
             <div class="live-indicator">
-                <span id="rate-value" style="font-family:monospace; margin-right:10px">0 eps</span>
+                <span id="rate-value">0 eps</span>
                 <div class="dot" id="conn-dot"></div> 
                 <span id="conn-text">Connecting...</span>
             </div>
@@ -240,16 +263,10 @@
     </div>
 
 <script>
-    // --- GPIO CONTROL LOGIC ---
     function toggleGpio(pin) {
-        // Optimistic UI update (optional, but makes it feel fast)
-        // const btn = document.getElementById('btn-' + pin);
-        // btn.style.opacity = "0.5"; 
-
         fetch('/pio=' + pin + '?toggle')
             .then(response => response.json())
             .then(data => {
-                // Expecting: {"pio":"10","value":true}
                 const btn = document.getElementById('btn-' + data.pio);
                 if (data.value === true || data.value === "true") {
                     btn.classList.add('on');
@@ -268,19 +285,8 @@
     const MAX_POINTS = 200;
     let lastStatus = null; 
     let lastTextUpdate = 0; 
-    
-    // FPS Counters
     let frameCount = 0;
     let lastRateCheck = Date.now();
-
-    function formatTime(seconds) {
-        if(!seconds) return "00:00:00";
-        const sTotal = Math.floor(seconds / 1000000); 
-        const h = Math.floor(sTotal / 3600).toString().padStart(2, '0');
-        const m = Math.floor((sTotal % 3600) / 60).toString().padStart(2, '0');
-        const s = Math.floor(sTotal % 60).toString().padStart(2, '0');
-        return `${h}:${m}:${s}`;
-    }
 
     function addLogEntry(type, msg) {
         const tbody = document.getElementById('log-body');
@@ -291,6 +297,7 @@
         if(type === 'BLE') color = 'var(--accent-blue)';
         if(type === 'RADAR') color = 'var(--accent-purple)';
         if(type === 'GPIO') color = 'var(--accent-green)';
+        if(type === 'SYS') color = '#f59e0b';
 
         row.innerHTML = `
             <td class="log-time">${timeStr}</td>
@@ -310,7 +317,6 @@
         if (rssi > -55) bars[3].classList.add('active');
     }
 
-    // --- CHART 1: RSSI ---
     const ctxRssi = document.getElementById('rssiChart').getContext('2d');
     const gradRssi = ctxRssi.createLinearGradient(0, 0, 0, 300);
     gradRssi.addColorStop(0, 'rgba(59, 130, 246, 0.5)');
@@ -335,14 +341,10 @@
             maintainAspectRatio: false,
             animation: false, 
             plugins: { legend: { display: false } },
-            scales: {
-                x: { display: false },
-                y: { min: -100, max: -30, grid: { color: '#374151' } }
-            }
+            scales: { x: { display: false }, y: { min: -100, max: -30, grid: { color: '#374151' } } }
         }
     });
 
-    // --- CHART 2: RADAR ---
     const ctxRadar = document.getElementById('radarChart').getContext('2d');
     const gradRadar = ctxRadar.createLinearGradient(0, 0, 0, 300);
     gradRadar.addColorStop(0, 'rgba(139, 92, 246, 0.5)');
@@ -367,10 +369,7 @@
             maintainAspectRatio: false,
             animation: false, 
             plugins: { legend: { display: false } },
-            scales: {
-                x: { display: false },
-                y: { min: 0, max: 1000, grid: { color: '#374151' } }
-            }
+            scales: { x: { display: false }, y: { min: 0, max: 1000, grid: { color: '#374151' } } }
         }
     });
 
@@ -389,7 +388,16 @@
             const now = Date.now();
             frameCount++;
 
-            if ('peak' in data) {
+            // --- SYSTEM STATS HANDLER ---
+            if (data.type === 'sys') {
+                if(data.temp_f !== undefined) document.getElementById('sys-temp').textContent = parseFloat(data.temp_f).toFixed(1) + "°F";
+                if(data.ram_pct !== undefined) document.getElementById('sys-ram').textContent = parseFloat(data.ram_pct).toFixed(1) + "%";
+                if(data.flash_pct !== undefined) document.getElementById('sys-flash').textContent = parseFloat(data.flash_pct).toFixed(1) + "%";
+                return;
+            }
+
+            // --- RADAR / ULTRA HANDLER ---
+            if (data.type === 'ultra') {
                 const rData = chartRadar.data.datasets[0].data;
                 rData.push(data.magnitude);
                 rData.shift();
@@ -402,7 +410,8 @@
                 }
             }
 
-            if ('rssi' in data) {
+            // --- BLE HANDLER ---
+            else if (data.type === 'BLE') {
                 const bData = chartRssi.data.datasets[0].data;
                 bData.push(data.rssi);
                 bData.shift();
@@ -413,8 +422,8 @@
 
                     let fullTrend = 'UNCONNECTED';
                     if (data.trend === "STARTED") fullTrend = 'SCANNING';
-                    else if (parseInt(data.trend) > 0) fullTrend = 'APPROACHING';
-                    else if (parseInt(data.trend) < 0) fullTrend = 'LEAVING';
+                    else if (parseFloat(data.trend) > 0) fullTrend = 'APPROACHING';
+                    else if (parseFloat(data.trend) < 0) fullTrend = 'LEAVING';
                     else fullTrend = 'STATIONARY';
 
                     const statusEl = document.getElementById('status-value');
@@ -426,6 +435,13 @@
                         lastStatus = fullTrend;
                     }
                 }
+            } 
+            
+            // --- STARTUP / MISC HANDLER ---
+            else if (data.trend === "STARTED") {
+                 const statusEl = document.getElementById('status-value');
+                 statusEl.textContent = "SCANNING";
+                 statusEl.className = 'card-value';
             }
 
             if (now - lastTextUpdate > 200) {
@@ -453,4 +469,4 @@
 </script>
 </body>
 </html>
-)RAWHTML";
+)RAWHTML"

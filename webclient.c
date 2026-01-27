@@ -25,7 +25,7 @@ bool NetworkResponse(const char *key, char *out_buf, size_t buf_size)
 {
     if (json_response == NULL || out_buf == NULL || buf_size == 0)
     {
-        return NULL;
+        return false;
     }
     // 1. Search for the key with quotes to avoid partial matches
     // We look for "key"
@@ -34,7 +34,7 @@ bool NetworkResponse(const char *key, char *out_buf, size_t buf_size)
 
     char *begining = strstr(json_response, search_key);
     if (!begining)
-        return NULL;
+        return false;
     //shift past "key":"
     begining=begining+strlen(search_key);
     // Find the end
@@ -44,7 +44,7 @@ bool NetworkResponse(const char *key, char *out_buf, size_t buf_size)
     int len = end - begining;
     memcpy(out_buf, begining, len );
     out_buf[len] = '\0';
-    return out_buf;
+    return begining;
 }
 
 // --- Callback: Connection Closed ---
@@ -60,7 +60,7 @@ static void close_connection(struct tcp_pcb *pcb, post_state_t *state)
     }
     if (state)
         free(state);
-    printf("Middleware connection closed.\n");
+    printf("Response Received\n");
 }
 
 // --- Callback: Data Received (The Response) ---
@@ -74,6 +74,7 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     }
 
     tcp_recved(pcb, p->tot_len);
+    printf("resp:%s\n",p->payload);
 
     // Create a temporary null-terminated string from the packet
     // We allocate +1 for the null terminator
@@ -112,7 +113,7 @@ static err_t on_connected(void *arg, struct tcp_pcb *pcb, err_t err)
         return err;
     }
 
-    printf("Connected! Sending POST...\n");
+    //printf("Connected! Sending POST...\n");
 
     // Setup receive callback
     tcp_recv(pcb, on_recv);
@@ -135,14 +136,14 @@ static err_t on_connected(void *arg, struct tcp_pcb *pcb, err_t err)
 }
 
 // --- 1. The Helper that actually connects (moved out of the main function) ---
-static void do_tcp_connect(ip_addr_t *ipaddr, post_state_t *state)
+static bool do_tcp_connect(ip_addr_t *ipaddr, post_state_t *state)
 {
     state->pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (!state->pcb)
     {
         printf("Failed to create PCB\n");
         free(state);
-        return;
+        return false;
     }
 
     tcp_arg(state->pcb, state);
@@ -154,7 +155,10 @@ static void do_tcp_connect(ip_addr_t *ipaddr, post_state_t *state)
     {
         printf("TCP connect failed: %d\n", err);
         close_connection(state->pcb, state);
+        return false;
     }
+
+    return true;
 }
 
 // --- 2. The DNS Callback (Fires later if lookup was needed) ---
@@ -164,7 +168,7 @@ static void dns_found_cb(const char *name, const ip_addr_t *ipaddr, void *callba
 
     if (ipaddr != NULL)
     {
-        printf("DNS Resolved: %s -> %s\n", name, ipaddr_ntoa(ipaddr));
+        printf("DNS Resolved:\t%s -> %s\n", name, ipaddr_ntoa(ipaddr));
         // IP found! Now we connect.
         do_tcp_connect((ip_addr_t *)ipaddr, state);
     }
@@ -176,7 +180,7 @@ static void dns_found_cb(const char *name, const ip_addr_t *ipaddr, void *callba
 }
 
 // --- 3. The Main Function ---
-void network_post(const char *json_body)
+bool network_post(const char *json_body)
 {
     char auth_key[32];
     pico_get_unique_board_id_string(auth_key, sizeof(auth_key));
@@ -185,7 +189,7 @@ void network_post(const char *json_body)
     if (!state)
     {
         printf("OOM\n");
-        return;
+        return false;
     }
 
     // Prepare buffer (same as before)...
@@ -210,18 +214,20 @@ void network_post(const char *json_body)
     if (err == ERR_OK)
     {
         // Case A: IP was already in cache. Connect immediately.
-        do_tcp_connect(&server_ip, state);
+        return do_tcp_connect(&server_ip, state);
     }
     else if (err == ERR_INPROGRESS)
     {
         // Case B: Lookup started. usage continues...
         // The 'dns_found_cb' will handle the rest later.
-        printf("Resolving hostname %s...\n", MIDDLEWARE_HOST);
+//        printf("Resolving hostname %s...\n", MIDDLEWARE_HOST);
+        return true;
     }
     else
     {
         // Case C: Error (e.g. DNS not initialized)
         printf("DNS call failed: %d\n", err);
         free(state);
+        return false;
     }
 }

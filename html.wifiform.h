@@ -103,8 +103,8 @@
             <label for="_password">Wi-Fi Password</label>
             <input type="password" name="_password" id="_password" maxlength="64" placeholder="Optional">
 
-            <label for="_BLE_target">Target Device Name</label>
-            <input type="text" name="_BLE_target" id="_BLE_target" maxlength="32" placeholder="e.g. MyTag">
+            <label for="_bleName">Target Device Name</label>
+            <input type="text" name="_BLE_target" id="_bleName" maxlength="32" placeholder="e.g. MyTag">
 
             <button type="submit" id="saveBtn">Connect</button>
         </form>
@@ -115,11 +115,11 @@
         const inputs = {
             ssid: document.getElementById('_ssid'),
             pass: document.getElementById('_password'),
-            ble: document.getElementById('_BLE_target')
+            ble: document.getElementById('_bleName')
         };
 
         // Fetch settings immediately on load
-        fetch('/settings')
+        fetch('./settings')
             .then(response => {
                 if (!response.ok) throw new Error('API Error');
                 return response.json();
@@ -128,7 +128,7 @@
                 // Populate fields
                 if(data.ssid) inputs.ssid.value = data.ssid;
                 if(data.password) inputs.pass.value = data.password;
-                if(data.bleTarget) inputs.ble.value = data.bleTarget;
+                if(data.bleName) inputs.ble.value = data.bleName;
                 
                 // Update UX
                 inputs.ssid.placeholder = "Enter Wi-Fi Name";

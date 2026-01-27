@@ -38,9 +38,8 @@ bool wifi_provisioning_start()
     if (cyw43_arch_init())
     {
         printf("WiFi init failed\n");
-        return false;
+        reset();
     }
-
     char *ap_ssid = CYW43_HOST_NAME; //[24];
     printf("Starting AP: %s (Open)\n", ap_ssid);
     cyw43_arch_enable_ap_mode(ap_ssid, NULL, CYW43_AUTH_OPEN);
@@ -48,15 +47,15 @@ bool wifi_provisioning_start()
     start_dhcp_server();
     dns_server_init();
 
-    printf("Provision System at:");
+    printf("Provision url:\t");
     return true;
 }
 
-bool ConnectNetwork(DeviceSettings *settings)
+bool ConnectNetwork(DeviceSettings *pro_settings)
 {
-    if (settings->ssid[0] == '\0')
+    if (pro_settings->ssid[0] == '\0')
     {
-        printf("No SSID configured.\n");
+        printf("SSID:\tNot configured\n");
         return false;
     }
     if (cyw43_arch_init())
@@ -64,21 +63,20 @@ bool ConnectNetwork(DeviceSettings *settings)
         printf("WiFi init failed\n");
         reset();
     }
-    touchBase();
     cyw43_arch_enable_sta_mode();
-    touchBase();
 
-    int error = cyw43_arch_wifi_connect_timeout_ms(settings->ssid, settings->password, CYW43_AUTH_WPA3_WPA2_AES_PSK, 20000);
+    int error = cyw43_arch_wifi_connect_timeout_ms(pro_settings->ssid, pro_settings->password, CYW43_AUTH_WPA3_WPA2_AES_PSK, 30000);
+//    int error = cyw43_arch_wifi_connect_timeout_ms("ROBO", "UseTheForce", CYW43_AUTH_WPA3_WPA2_AES_PSK, 25000);
     if (error)
     {
-        printf("Failed to connect to %s. Error# %d\n", settings->ssid, error);
+        touchBase();
         cyw43_arch_deinit();
+        printf("Failed to connect to %s. Error# %d\n", pro_settings->ssid, error);
         return false;
     }
     else
     {
-        printf("Connected to %s @  ", settings->ssid, ip4addr_ntoa(netif_ip4_addr(netif_default)));
+        printf("WiFi Connect:\t", pro_settings->ssid);
         return true;
     }
-    touchBase();
 }

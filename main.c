@@ -1,6 +1,7 @@
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
 #include "pico/cyw43_arch.h"
+
 #include "ble_strength.h"
 #include "webserver.h"
 #include "webclient.h"
@@ -8,73 +9,65 @@
 #include "dhcpserver.h"
 #include "flash.h"
 #include "ultrasonic.h"
+#include "malloc.h"
 
-#define DEBUG 1
+// #define DEBUG 1
 
 bool AssignTeslaBLE_Name(char *target)
 {
-    // 2. Fetch BLE Name from Tesla
-    network_post("{\"status\":\"ready\"}");
-    while (strlen(target) == 0)
+    while (!network_post("{\"status\":\"ready\"}"))
     {
-        cyw43_arch_poll();
-        NetworkResponse("BLE", target, 32);
+        printf("Retrying Tesla\n");
         touchBase();
     }
+    while (!NetworkResponse("BLE", target, 32))
+    {
+        touchBase();
+    }
+    printf("Tesla BLE Name:\t%s\n", target);
 }
 int main()
 {
     stdio_init_all();
     sleep_ms(2000); // Give serial time to open
-    bool connected = false;
-    load_settings();
-
-#ifdef DEBUG
-    printf("Debugging mode enabled\n");
-#endif
-
-    char id_str[32];
-    pico_get_unique_board_id_string(id_str, sizeof(id_str));
-    printf("%s Starting on Pico ID: %s\n", CYW43_HOST_NAME, id_str);
-
-    //    strcpy(settings.bleTarget,"LE-Bose Revolve+ SoundLink");
-    //    strcpy(settings.bleTarget,"N169A");
-    touchBase();
-    printf("Current Config:\tTarget:%s\tSSID:%s\n", settings.bleTarget, settings.ssid);
-    sleep_ms(100);
-    if (settings.initialized)
-    {
-        connected = ConnectNetwork(&settings);
-        touchBase();
-    }
+    DeviceSettings *local = load_settings();
+    bool connected = ConnectNetwork(local);
     if (!connected)
     {
-        settings.initialized = false;
         wifi_provisioning_start();
     }
     touchBase();
-
     webserver_init(!connected); // Toggle responses based on AP or Wifi COnnection
     touchBase();
 
-    if (connected && strlen(settings.bleTarget) < 2)
+    if (connected && strlen(local->bleName) < 2)
     {
-        AssignTeslaBLE_Name(settings.bleTarget);
+        printf("Contacting Tesla\n");
+        AssignTeslaBLE_Name(local->bleName);
         touchBase();
     }
-    BLE_Init(settings.bleTarget, webserver_push_update);
+
+    BLE_Init(webserver_push_update);
     touchBase();
+
     radar_init();
     touchBase();
     Detection det = {0};
 
-    while (connected || !settings.initialized)
+    while (connected || strlen(settings.ssid) == 0)
     {
-        cyw43_bluetooth_hci_process(); // Your BLE work
-        webserver_poll();              // Handle webserver lwIP worknsive
+        cyw43_bluetooth_hci_process();
+        webserver_poll();
         radar_run_cycle();
         process_one_beam(CHIRP_LENGTH, &det, webserver_push_update);
-        touchBase();
+
+        static int debug_ultra = 0;
+        if (++debug_ultra % 10 == 0)
+        {
+            send_status_event(webserver_push_update);
+        }
+            touchBase();
     }
+    printf("Reseting to connect to %s.\n", local->ssid);
     reset();
 }

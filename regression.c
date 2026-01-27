@@ -1,21 +1,17 @@
 #include <math.h>
 #include "pico/stdio.h"
 #include "pico/time.h"
-
-// --- Tunable Parameters ---
-#define HISTORY_SIZE 75       // 40 samples (approx 2-4 seconds of history)
-//#define GAUSSIAN_SIGMA 10.0f  // "Width" of the bell curve. Lower = more reactive, Higher = smoother.
-#define GAUSSIAN_SIGMA 40.0f  // "Width" of the bell curve. Lower = more reactive, Higher = smoother.
-
-typedef struct {
-    int8_t rssi;
-    uint32_t timestamp;
-} rssi_sample_t;
+#include "regression.h"
+#include <string.h>
+#include "flash.h"
+#include <stdio.h>
 
 // Returns trend as slope (dBm per second)
 // Positive = Approaching, Negative = Leaving
 float get_gaussian_trend(int8_t new_rssi) {
-    static rssi_sample_t history[HISTORY_SIZE];
+    static float last_slope =-99;
+    static uint8_t save_buffer[256*8];
+    static ble_event_t *ble = (ble_event_t *) save_buffer; 
     static float weights[HISTORY_SIZE];
     static bool weights_init = false;
     static uint8_t head = 0;
@@ -37,12 +33,12 @@ float get_gaussian_trend(int8_t new_rssi) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
     
     // If packet is wildly old or duplicate, ignore (optional safety)
-    if (count > 0 && now == history[(head - 1 + HISTORY_SIZE) % HISTORY_SIZE].timestamp) {
+    if (count > 0 && now == ble->history[(head - 1 + HISTORY_SIZE) % HISTORY_SIZE].timestamp) {
         return 0.0f; // Prevent divide by zero in time calc
     }
 
-    history[head].rssi = new_rssi;
-    history[head].timestamp = now;
+    ble->history[head].rssi = new_rssi;
+    ble->history[head].timestamp = now;
     head = (head + 1) % HISTORY_SIZE;
     if (count < HISTORY_SIZE) count++;
 
@@ -65,11 +61,11 @@ float get_gaussian_trend(int8_t new_rssi) {
         int idx = (head - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
         
         // y = RSSI
-        float y = (float)history[idx].rssi;
+        float y = (float)ble->history[idx].rssi;
         
         // x = Time delta in Seconds (negative because it's in the past)
         // Using real time handles missing packets/jitter gracefully!
-        float x = (float)(history[idx].timestamp - now) / 1000.0f;
+        float x = (float)(ble->history[idx].timestamp - now) / 1000.0f;
         
         // w = Gaussian Weight based on 'i' (staleness rank)
         float w = weights[i]; 
@@ -89,5 +85,30 @@ float get_gaussian_trend(int8_t new_rssi) {
     // Slope m = (SumW * SumWXY - SumWX * SumWY) / Denom
     float slope = ((sum_w * sum_wxy) - (sum_wx * sum_wy)) / denom;
 
+    static bool out_of_garage = true;
+    if (false && (out_of_garage && new_rssi > -50 || !out_of_garage && new_rssi < -100))
+    {
+        printf("Saving:%f - %s\n",slope, (out_of_garage)? "Arriving" : "Leaving");
+        out_of_garage = !out_of_garage;
+        ble->slope = slope;
+        ble->size = sizeof(ble_event_t);
+        ble->time = get_absolute_time();
+        // Buffer must be a multiple of FLASH_PAGE_SIZE (256)
+        save_history(save_buffer);
+        ble_event_t *fs_check;
+        fs_check=(ble_event_t *)read_history(settings.position-1);
+
+        printf("{\"position\":%2d},{\"slope\":%f},{\"size\":%3d}\n", settings.position-1, fs_check->slope, fs_check->size);
+        printf("{history:[\n");
+        for (size_t j = 0; j < 256; j++)
+        {
+        printf("\t{\"rssi\":%f},{\"micro_s\":%llu}\n", fs_check->history[j].rssi, fs_check->history[j].timestamp);
+        }
+        printf("]}\n");
+
+
+        touchBase();
+        save_settings(true);
+    }
     return slope; 
 }

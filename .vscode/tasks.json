@@ -20,8 +20,9 @@
         {
             "label": "Run Project",
             "type": "process",
-            "command": "${env:HOME}/.pico-sdk/picotool/2.2.0-a4/picotool/picotool",
+            "command": "sudo",
             "args": [
+                "${env:HOME}/.pico-sdk/picotool/2.2.0-a4/picotool/picotool",
                 "load",
                 "${command:raspberry-pi-pico.launchTargetPath}",
                 "-fx"

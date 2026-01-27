@@ -3,16 +3,17 @@
 #include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
-#include "hardware/clocks.h" // <--- ADDED THIS TO FIX ERRORS
+#include "hardware/clocks.h" 
 #include "ultrasonic.h"
 #include "chirp.pio.h"
 #include <string.h>
+#include "flash.h"
 
 #define COMPLEX_SAMPLE_RATE_HZ 100000.0f
 
 #define SPEED_OF_SOUND_MPS 343.0f
 #define PICO_DEFAULT_LED_PIN 29
-#define CHIRP_PIN 5 // Physical Pin 7 is GPIO 5
+#define CHIRP_PIN 15 // Physical Pin 7 is GPIO 5
 
 uint16_t adc_buffer_i[CHIRP_LENGTH];
 uint16_t adc_buffer_q[CHIRP_LENGTH];
@@ -103,7 +104,7 @@ void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t
     // 2. NOISE FLOOR ESTIMATION
     // Measure variance in the early part of the buffer.
     int64_t noise_sum = 0;
-    for (int i = 10; i < 50; i++)
+    for (int i = 10; i < 10; i++)//50
     {
         int32_t sample = (int32_t)adc_buffer_i[i] - local_center;
         noise_sum += (int64_t)sample * sample;
@@ -118,7 +119,7 @@ void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t
 
     // skip_samples: Ignore "Main Bang" (transmitter ringing).
     // Increased to 220 because the 12V pulse rings longer.
-    const int skip_samples = 50;
+    const int skip_samples = 10; //50
 
     for (int i = skip_samples; i < len - 10; i++)
     {
@@ -134,7 +135,7 @@ void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t
 
     // 4. THRESHOLDING AND DISTANCE
     // Threshold set to 1500 to ignore small air turbulence but catch real walls.
-    if (max_idx > skip_samples && max_mag_sq > 2500)
+    if (max_idx > skip_samples && max_mag_sq > 1500)
     { // Increased from 1500
         det->amplitude_sq = (uint32_t)max_mag_sq;
 
@@ -149,25 +150,16 @@ void process_one_beam(int len, Detection *det,void (*notifer)(char *json, size_t
         det->amplitude_sq = 0;
     }
 
+//    printf("DEBUG: max_idx=%d, max_mag_sq=%lld, noise=%lld, threshold=1500, distance=%u mm\n",
+//       max_idx, max_mag_sq, noise_floor, det->distance_mm);
+
     // Console Debug Output (every 10 samples for better visibility)
-    static int debug_count = 0;
-    if (++debug_count % 10 == 0)
-    {
-        char ultra_payload[256];
-
+        static char ultra_payload[256];
         snprintf(ultra_payload, sizeof(ultra_payload),
-                 "data: {\"mm\":%d,\"time\":%llu,\"peak\":%d,\"magnitude\":%lld,\"noise\":%lld}\r\r\n",
+                 "data: {\"type\":\"ultra\",\"mm\":%d,\"time\":%llu,\"peak\":%d,\"magnitude\":%lld,\"noise\":%lld}\r\r\n",
                   det->distance_mm,get_absolute_time(), max_idx, max_mag_sq, noise_floor);
-//                 data: {"rssi":-62,"time":26192933,"trend":"0"}
-
 #ifdef DEBUG
-
-        printf("Ultrasound:%s\n", payload);
+        printf("Ultrasound:%s\n", ultra_payload);
 #endif
-//        printf("Ultrasound:%s\n", payload);
         notifer(ultra_payload, strlen(ultra_payload));
-
-        //        printf("Bias: %d | Peak: %d | Mag: %lld | Noise: %lld | Dist: %dmm\n",
-        //               local_center, max_idx, max_mag_sq, noise_floor, det->distance_mm);
-    }
 }
