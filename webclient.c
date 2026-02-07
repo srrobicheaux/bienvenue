@@ -6,11 +6,8 @@
 #include "lwip/dns.h"
 #include "lwip/api.h"
 #include "pico/unique_id.h"
-#include "secrets.h"
 
 // Configuration
-#define MIDDLEWARE_HOST AZURE_HOST
-#define MIDDLEWARE_PATH PHP_PATH
 #define MIDDLEWARE_PORT 80
 
 // State structure to keep track of the request
@@ -21,30 +18,40 @@ typedef struct
 } post_state_t;
 
 char *json_response; // Buffer for headers + body
-bool NetworkResponse(const char *key, char *out_buf, size_t buf_size)
+bool NetworkResponse(const char *key, char *out_buf, size_t buf_size, char start_c, char end_c)
 {
-    if (json_response == NULL || out_buf == NULL || buf_size == 0)
+    char search_key[25];
+    snprintf(search_key, sizeof(search_key), "\"%s\":", key);
+    char *key_start = strstr(json_response, search_key);
+    if (json_response == NULL || out_buf == NULL || buf_size == 0 || key_start == NULL)
     {
         return false;
     }
-    // 1. Search for the key with quotes to avoid partial matches
     // We look for "key"
-    char search_key[15];
-    snprintf(search_key, sizeof(search_key), "\"%s\":\"", key);
-
-    char *begining = strstr(json_response, search_key);
+    char *key_end = key_start + strlen(key) + 3; // add two for the quotes
+    char *begining = strchr(key_end, start_c)+1;
     if (!begining)
         return false;
-    //shift past "key":"
-    begining=begining+strlen(search_key);
     // Find the end
-    char *end = strchr(begining , '\"');
+    char *end = strchr(begining, end_c);
     if (!end)
         return NULL;
     int len = end - begining;
-    memcpy(out_buf, begining, len );
+    memcpy(out_buf, begining, len);
     out_buf[len] = '\0';
-    return begining;
+    return true;
+}
+
+bool ResponseString(const char *key, char *out_buf, size_t buf_size)
+{
+    return NetworkResponse(key, out_buf, buf_size, '\"', '\"');
+}
+bool ResponseNumber(const char *key, long long *out_buf, size_t buf_size)
+{
+    char float_c[11];
+    bool result = NetworkResponse(key, float_c, buf_size, ' ', ',');
+    *out_buf = (long long)atoll(float_c);
+    return result;
 }
 
 // --- Callback: Connection Closed ---
@@ -60,7 +67,7 @@ static void close_connection(struct tcp_pcb *pcb, post_state_t *state)
     }
     if (state)
         free(state);
-    printf("Response Received\n");
+    //    printf("Response Received\n");
 }
 
 // --- Callback: Data Received (The Response) ---
@@ -74,7 +81,6 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     }
 
     tcp_recved(pcb, p->tot_len);
-    printf("resp:%s\n",p->payload);
 
     // Create a temporary null-terminated string from the packet
     // We allocate +1 for the null terminator
@@ -113,13 +119,13 @@ static err_t on_connected(void *arg, struct tcp_pcb *pcb, err_t err)
         return err;
     }
 
-    //printf("Connected! Sending POST...\n");
+    // printf("Connected! Sending POST...\n");
 
     // Setup receive callback
     tcp_recv(pcb, on_recv);
-
-    // Send the data we prepared in the state buffer
-    // TCP_WRITE_FLAG_COPY tells lwIP to copy data so we can free our struct later if needed
+    // printf("\nSending: %s\n",state->request_buffer);
+    //  Send the data we prepared in the state buffer
+    //  TCP_WRITE_FLAG_COPY tells lwIP to copy data so we can free our struct later if needed
     err_t write_err = tcp_write(pcb, state->request_buffer, strlen(state->request_buffer), TCP_WRITE_FLAG_COPY);
 
     if (write_err == ERR_OK)
@@ -180,7 +186,7 @@ static void dns_found_cb(const char *name, const ip_addr_t *ipaddr, void *callba
 }
 
 // --- 3. The Main Function ---
-bool network_post(const char *json_body)
+bool network_post(const char *json_body, const char *middleware_host, const char *middleware_path)
 {
     char auth_key[32];
     pico_get_unique_board_id_string(auth_key, sizeof(auth_key));
@@ -191,25 +197,53 @@ bool network_post(const char *json_body)
         printf("OOM\n");
         return false;
     }
+    if (json_body == NULL)
+    {
+        // get routinge
+        snprintf(state->request_buffer, sizeof(state->request_buffer),
+                 //             "POST %s HTTP/1.1\r\n"
+                 "GET %s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Accept: application/json\r\n" // Important for modern middleware
+                 "Content-Length: 0\r\n"        // Use %zu for strlen (size_t)
+                 "Connection: close\r\n"
+                 "\r\n",
+                 middleware_path, middleware_host);
+    }
+    else
+    {
+        // post
+        snprintf(state->request_buffer, sizeof(state->request_buffer),
+                 "POST %s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Accept: application/json\r\n" // Important for modern middleware
+                 "X-Auth-Key: %s\r\n"
+                 "Content-Length: %zu\r\n" // Use %zu for strlen (size_t)
+                 "Connection: close\r\n"
+                 "%s\r\n\r\n",
+                 middleware_path, middleware_host, auth_key, json_body, strlen(json_body));
+    }
 
-    // Prepare buffer (same as before)...
     snprintf(state->request_buffer, sizeof(state->request_buffer),
-             "POST %s HTTP/1.1\r\n"
+             //             "POST %s HTTP/1.1\r\n"
+             "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "Content-Type: application/json\r\n"
+             "Accept: application/json\r\n" // Important for modern middleware
              "X-Auth-Key: %s\r\n"
-             "Content-Length: %d\r\n"
+             "Content-Length: %zu\r\n" // Use %zu for strlen (size_t)
              "Connection: close\r\n"
-             "\r\n"
-             "%s",
-             MIDDLEWARE_PATH, MIDDLEWARE_HOST, auth_key, strlen(json_body), json_body);
+             "\r\n",
+             middleware_path, middleware_host, auth_key, 0);
 
     ip_addr_t server_ip;
 
     // START DNS LOOKUP
     // We pass 'dns_found_cb' as the function to call when finished.
     // We pass 'state' as the argument so the callback has access to your data.
-    err_t err = dns_gethostbyname(MIDDLEWARE_HOST, &server_ip, dns_found_cb, state);
+    err_t err = dns_gethostbyname(middleware_host, &server_ip, dns_found_cb, state);
 
     if (err == ERR_OK)
     {
@@ -220,7 +254,7 @@ bool network_post(const char *json_body)
     {
         // Case B: Lookup started. usage continues...
         // The 'dns_found_cb' will handle the rest later.
-//        printf("Resolving hostname %s...\n", MIDDLEWARE_HOST);
+        //        printf("Resolving hostname %s...\n", MIDDLEWARE_HOST);
         return true;
     }
     else
@@ -230,4 +264,8 @@ bool network_post(const char *json_body)
         free(state);
         return false;
     }
+}
+bool networkGet(const char *middleware_host, const char *middleware_path)
+{
+    network_post(NULL, middleware_host, middleware_path);
 }

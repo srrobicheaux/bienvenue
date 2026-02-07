@@ -66,7 +66,6 @@ bool ConnectNetwork(DeviceSettings *pro_settings)
     cyw43_arch_enable_sta_mode();
 
     int error = cyw43_arch_wifi_connect_timeout_ms(pro_settings->ssid, pro_settings->password, CYW43_AUTH_WPA3_WPA2_AES_PSK, 30000);
-//    int error = cyw43_arch_wifi_connect_timeout_ms("ROBO", "UseTheForce", CYW43_AUTH_WPA3_WPA2_AES_PSK, 25000);
     if (error)
     {
         touchBase();

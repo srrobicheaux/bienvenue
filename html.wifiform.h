@@ -104,7 +104,7 @@
             <input type="password" name="_password" id="_password" maxlength="64" placeholder="Optional">
 
             <label for="_bleName">Target Device Name</label>
-            <input type="text" name="_BLE_target" id="_bleName" maxlength="32" placeholder="e.g. MyTag">
+            <input type="text" name="_bleName" id="_bleName" maxlength="32" placeholder="e.g. MyTag">
 
             <button type="submit" id="saveBtn">Connect</button>
         </form>

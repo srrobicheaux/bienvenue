@@ -249,12 +249,12 @@ void reset()
 void ButtonPress()
 {
     watchdog_disable();
-    uint32_t LongPress = get_absolute_time() + 10000000; //~10seconds
+    absolute_time_t LongPress =   get_absolute_time() + 10000000; //~10seconds
 
     while (get_bootsel_button())
         ;
     // if more than ~10s held, reset settings
-    if (LongPress < get_absolute_time())
+    if (time_reached(LongPress))
     {
         // blank id to indicate uninitialized
 

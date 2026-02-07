@@ -22,7 +22,14 @@ static btstack_packet_callback_registration_t hci_event_callback_registration;
 
 bool bleAddressSet()
 {
- return (settings.bleAddress[0] + settings.bleAddress[1] + settings.bleAddress[2] +settings.bleAddress[3]);
+    for (int i = 0; i < 4; i++)
+    {
+        if (settings.bleAddress[i] != 0xFF && settings.bleAddress[i] != 0x00)
+        {
+            return true; // Found a valid-looking byte
+        }
+    }
+    return false; // All bytes were either 0xFF or 0x00
 }
 
 int DiscoveryName(uint8_t *packet, char *device_name, size_t size)
@@ -54,6 +61,7 @@ void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint
 {
     static char payload[256];
     static char name[64];
+    char *current_name;
 
     if (packet_type != HCI_EVENT_PACKET)
         return;
@@ -65,9 +73,22 @@ void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint
         int8_t rssi = gap_event_advertising_report_get_rssi(packet);
 
         name[0] = '\0';
-        if (!bleAddressSet())
+        float trend = 0;
+        if (bleAddressSet())
         {
-            // see if name is actually a MAC address and if so use it.
+            if (bd_addr_cmp(address, settings.bleAddress) != 0)
+            {
+                return;
+            }
+            else
+            {
+                trend = get_gaussian_trend(rssi);
+                current_name = settings.bleName;
+            }
+        }
+        else
+        {
+            current_name = name;
             if (DiscoveryName(packet, name, 64))
             {
                 if (strcasecmp(name, settings.bleName) == 0)
@@ -79,17 +100,11 @@ void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint
             }
         }
 
-        if (!bleAddressSet() || (bd_addr_cmp(address, settings.bleAddress) == 0))
-        {
-            float trend = get_gaussian_trend(rssi);
-            //            float trend = 0;
-
-            snprintf(payload, sizeof(payload),
-                     "data: {\"type\":\"BLE\",\"MAC\":\"%s\",\"rssi\":%d,\"time_s\":%llu,\"trend\":\"%f\",\"name\":\"%s\"}\r\r\n",
-                     bd_addr_to_str(address), rssi, get_absolute_time(), trend,
-                     bleAddressSet() ? settings.bleName : name);
-            notify(payload, strlen(payload));
-        }
+        snprintf(payload, sizeof(payload),
+                 "data: {\"type\":\"BLE\",\"MAC\":\"%s\",\"rssi\":%d,\"time_s\":%llu,\"trend\":\"%f\",\"name\":\"%s\"}\r\r\n",
+                 bd_addr_to_str(address), rssi, get_absolute_time(), trend,
+                 current_name);
+        notify(payload, strlen(payload));
     }
 }
 
@@ -98,8 +113,8 @@ bool BLE_Init(void (*notifer)(char *json, size_t size))
     // Initialize BTstack (Standard boiler plate)
     notify = notifer;
 #ifdef DEBUG
-    printf("BLE Target:\t%s.\n", (bleAddressSet()) ? bd_addr_to_str(settings.bleAddress) : settings.bleName);
-    printf("BLE MAC:\t%s.\n", bd_addr_to_str(settings.bleAddress));
+    printf("BLE Name:\t%s\n", settings.bleName);
+    printf("BLE MAC:\t%s\n", bd_addr_to_str(settings.bleAddress));
 #endif
 
     l2cap_init();

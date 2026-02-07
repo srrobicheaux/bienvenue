@@ -18,6 +18,7 @@
 // #define DEBUG 1
 
 // other responses defined n the html files
+#define RESPOND_NOT_FOUND "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 - File Not Found</h1></body></html>"
 #define RESPOND_SSE "data: {\"trend\":\"STARTED\",\"uptime\":0}\r\r\n"
 #define HEADER_CONTINUE "HTTP/1.1 100 Continue\r\n\r\n"
 // this one needs to be modifiable to add length
@@ -27,11 +28,11 @@
     "Connection: close\r\n"       \
     "Cache-Control: no-cache\r\n" \
     "Content-Length:%d\r\n\r\n"
-#define HEADER_JSON                  \
-    "HTTP/1.1 200 OK"                \
-    "Content-Type: application/json" \
-    "Connection: close\r\n"          \
-    "Cache-Control: no-cache\r\n"    \
+#define HEADER_JSON                      \
+    "HTTP/1.1 200 OK\r\n"                \
+    "Content-Type: application/json\r\n" \
+    "Connection: close\r\n"              \
+    "Cache-Control: no-cache\r\n"        \
     "Content-Length:%d\r\n\r\n"
 #define HEADER_SSE                        \
     "HTTP/1.1 200 OK\r\n"                 \
@@ -39,11 +40,15 @@
     "Cache-Control: no-cache\r\n"         \
     "Connection: keep-alive\r\n"          \
     "Access-Control-Allow-Origin: *\r\n\r\n"
-#define HEADER_REDIRECT                 \
-    "HTTP/1.1 302 Found\r\n"            \
-    "Location: http://192.168.4.1/\r\n" \
-    "Content-Length: 0\r\n"             \
-    "Connection: close\r\n\r\n";
+#define HEADER_REDIRECT                \
+    "HTTP/1.1 302 Found\r\n"           \
+    "Location: http://192.168.4.1\r\n" \
+    "Connection: close\r\n"            \
+    "Content-Length: %d\r\n\r\n"
+#define HEADER_NOT_FOUND                         \
+    "HTTP/1.1 404 Not Found\r\n"                 \
+    "Content-Type: text/html; charset=utf-8\r\n" \
+    "Content-Length: %d\r\n\r\n"
 
 // SSE clients (simple single-client for now – extend to list if needed)
 static struct tcp_pcb *sse_client = NULL;
@@ -134,20 +139,30 @@ bool parser(char *haystack, const char *needle, char *destination, size_t dest_m
 static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
 {
     static bool responding = false;
-    char *header = NULL;
-    char header_buffer[256];
-    char *response = NULL;
-    char response_buffer[256];
-    char req[1465];
+    char *header;
+    static char header_buffer[256];
+    char *response;
+    static char response_buffer[256];
+    static char req[1465];
     // char req[256];
+    // use static buffer to prevent mem allocation but assure they are empty strings at start
+    response = response_buffer;
+    header = header_buffer;
+    response_buffer[0] = '\0';
+    header_buffer[0] = '\0';
+    req[0] = '\0';
 
-    if (err != ERR_OK || p == NULL)
+    if (p == NULL)
+        return ERR_BUF;
+
+    if (err != ERR_OK)
     {
+        printf("HTTP error:%d\n", err);
         if (tpcb == sse_client)
             sse_client = NULL;
 
         tcp_close(tpcb);
-        return ERR_OK;
+        return ERR_RST;
     }
 
     tcp_recved(tpcb, p->tot_len);
@@ -159,8 +174,6 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
     memcpy(req, p->payload, length);
     req[length] = '\0';
-        printf("req:[%d]%s\n", length,req);
-
     // fragmented
     if (p->tot_len != p->len)
     {
@@ -175,8 +188,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     else if (responding || (length > 6 && strncmp(req, "POST /", 6) == 0))
     {
         char posted[256];
+        char *body = responding ? req : strstr(req, "\r\n\r\n") + 4;
         responding = true;
-        char *body = strstr(req, "\r\n\r\n") + 4;
 
         // 1. Decode the whole request buffer ONCE
         url_decode(posted, body);
@@ -186,14 +199,20 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         ss = parser(posted, "_ssid", settings.ssid, 32);
         pw = parser(posted, "_password", settings.password, 64);
         bt = parser(posted, "_bleName", settings.bleName, 32);
-        
+
         if (ss && pw && bt)
         {
-            memset(settings.bleAddress, '\0', sizeof(settings.bleAddress));
+            //            memset(settings.bleAddress, 0xFF, sizeof(settings.bleAddress));
             responding = false;
+            settings.bleAddress[0] = 0xFF;
+            settings.bleAddress[1] = 0xFF;
+            settings.bleAddress[2] = 0xFF;
+            settings.bleAddress[3] = 0xFF;
+
             save_settings(true); // Save (don't blank) immediately
             if (provisioning)
             {
+                provisioning = false;
                 response = RESPOND_SUCCESS;
             }
             else
@@ -208,14 +227,9 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
             return ERR_OK;
         }
     }
-    else if (length > 5 && strncmp(req, "GET /",5) && !strstr(req, "Host: 192.168.4.1"))
-    {
-
-        header = HEADER_REDIRECT;
-    }
     else if (length > 12 && strncmp(req, "GET /events ", 12) == 0)
     {
-        // SSE connection
+        // SSE connection - single client
         if (sse_client && sse_client != tpcb)
         {
             tcp_abort(sse_client);
@@ -229,13 +243,12 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
     else if ((length > 14 && (strncmp(req, "GET /settings ", 14) == 0)))
     {
-        // Serve settings for config
-        header = HEADER_JSON;
-        // save_settings();
-        //         DeviceSettings *settings = load_settings();
+        printf("Serving Settings\n");
+        load_settings();
         snprintf(response_buffer, sizeof(response_buffer),
                  "{\"ssid\":\"%s\",\"password\":\"%s\",\"bleName\":\"%s\"}\r\r\n",
-                 settings.ssid, settings.password, settings.bleName);
+                 "", "", "");
+        header = HEADER_JSON;
         response = response_buffer;
     }
     else if ((length > 9 && (strncmp(req, "GET /pio=", 9) == 0)))
@@ -252,7 +265,6 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
             pin(pio, 1);
         }
 
-        // Serve pio
         //        printf("RESPOND_PIO\n");
         header = HEADER_JSON;
 
@@ -260,9 +272,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
                  "{\"pio\":\"%d\",\"value\",%s}\r\r\n", pio, (pin(pio, false) ? "true" : "false"));
         response = response_buffer;
     }
-    else if ((length > 14 && (strncmp(req, "GET /dashboard ", 14) == 0)))
+    else if ((length > 15 && (strncmp(req, "GET /dashboard ", 15) == 0)))
     {
-        // Serve dashboard
         //       printf("RESPOND_DASHBOARD\n");
         response = RESPOND_DASHBOARD;
     }
@@ -279,49 +290,57 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
                  "{\"key\":\"%s\",\"value\",%s}\r\r\n", "Temporary", "true");
         response = response_buffer;
     }
-    else if (length == 6 || (strncmp(p->payload, "GET /f", length) == 6))
-    {
-        tcp_close(tpcb);
-        pbuf_free(p);
-        return ERR_OK;
-    }
-
-    else
+    else if (length > 6 || (strncmp(req, "GET / ", length) == 6))
     {
         if (provisioning)
         {
-            //          printf("RESPOND_FORM\n");
-            response = RESPOND_FORM;
+            if (strnstr(req, "Host: captive.apple.com", length))
+            {
+                printf("Redirecting to provisioning\n");
+                header = HEADER_REDIRECT;
+            }
+            else
+            {
+                header = HEADER_SUCCESS;
+                //          printf("RESPOND_FORM\n");
+                response = RESPOND_FORM;
+            }
         }
         else
         {
             // Serve dashboard
+            header = HEADER_SUCCESS;
             //           printf("RESPOND_DASHBOARD\n");
             response = RESPOND_DASHBOARD;
         }
     }
-    if (header == NULL)
+    else
+    {
+        header = HEADER_NOT_FOUND;
+        response = RESPOND_NOT_FOUND;
+    }
+    if (header == NULL || strlen(header) == 0)
     {
         header = HEADER_SUCCESS;
     }
     if (strstr(header, "Content-Length:") != 0)
     {
-        int len = 0;
-        if (response != NULL)
-        {
-            len = strlen(response);
-        }
-        snprintf(header_buffer, strlen(header) + 6, header, len);
+        snprintf(header_buffer, strlen(header) + 6, header, strlen(response));
         header = header_buffer;
     }
-
+#ifdef DEBUG
+    printf("Request:%.30s\n", req);
+    printf("Header write:%.30s\n", header);
+    printf("Response write:%.30s\n", response);
+#endif
     cyw43_arch_lwip_begin();
     tcp_write(tpcb, header, strlen(header), TCP_WRITE_FLAG_COPY);
 
-    if (response != NULL)
+    if (response != NULL && strlen(response) > 0)
     {
         tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
     }
+
     tcp_output(tpcb);
     cyw43_arch_lwip_end();
     return ERR_OK;
